@@ -16,6 +16,7 @@
 - [Phase 2 — Ingestion](#phase-2--ingestion)
   - [2.1 — Le format PDF et exploration](#étape-21--le-format-pdf-et-exploration-de-nos-documents)
   - [2.2 — Structure de données d'une page](#étape-22--structure-de-données-dune-page)
+  - [2.3 — Chargeur PDF](#étape-23--chargeur-pdf)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -690,7 +691,7 @@ Pas de test automatisé à cette étape : c'est une étape d'**exploration**. Le
 
 ## Étape 2.2 — Structure de données d'une page
 
-> Statut : implémentée le 2026-10-11, en attente de validation
+> Statut : validée le 2026-10-11
 
 ### Ce que j'ai fait
 
@@ -773,6 +774,103 @@ python -m pytest tests/unit/test_models.py -v
 - Valider dans `__post_init__` : un objet invalide ne doit pas exister.
 - `frozen=True` + `replace()` : on crée de nouvelles pages, on ne modifie jamais l'existante.
 
+**Un fichier de test n'a pas de `main()`**
+- C'est **pytest** qui joue le rôle du `main()` : il importe le fichier, trouve les fonctions `test_*` et les appelle une par une.
+- Lancer `python -m tests.unit.test_models` ne ferait rien : les fonctions seraient définies mais jamais appelées.
+- `make_page()` ne commence pas par `test_` : pytest ne l'exécute pas seule, seuls les tests l'appellent.
+
+---
+
+## Étape 2.3 — Chargeur PDF
+
+> Statut : implémentée le 2026-10-11, en attente de validation
+
+### Ce que j'ai fait
+
+- Créé `app/ingestion/pdf_loader.py` :
+  - `compute_document_id(pdf_path)` : identifiant à partir du contenu (SHA-256) ;
+  - `load_pdf(pdf_path)` : un PDF → liste de `DocumentPage` ;
+  - `load_pdfs_from_directory(directory)` : tous les PDF d'un dossier, sans les fichiers cassés ni les doublons ;
+  - `PDFLoadError` : l'erreur propre au projet.
+- Créé `tests/unit/test_pdf_loader.py` (9 tests).
+- Testé sur mes vrais PDF :
+  ```
+  INFO | app.ingestion.pdf_loader | 01_introduction_rag.pdf : 2 page(s) chargée(s) sur 2 (id=49289fd3ade5e236)
+  INFO | app.ingestion.pdf_loader | 02_embeddings_recherche_vectorielle.pdf : 2 page(s) chargée(s) sur 2 (id=b2304beac24baf07)
+  INFO | app.ingestion.pdf_loader | 03_evaluation_rag.pdf : 2 page(s) chargée(s) sur 2 (id=8a9457a4c9ec61c1)
+  INFO | app.ingestion.pdf_loader | 3 document(s) chargé(s), 6 page(s) au total
+  ```
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_pdf_loader.py` · **Module testé** : `app/ingestion/pdf_loader.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_one_document_page_per_pdf_page` | Un PDF de 2 pages donne 2 `DocumentPage` numérotées **1 et 2** | Numérotation humaine (le `+1` est bien fait) |
+| `test_source_is_the_file_name` | `source == "mon_document.pdf"`, sans le chemin | Citations lisibles, indépendantes de l'emplacement |
+| `test_document_id_depends_on_content_not_name` | Une copie a le même id ; un autre contenu a un autre id ; longueur 16 | Base du dédoublonnage |
+| `test_empty_page_is_skipped_with_warning` | Une page blanche est ignorée, avec un WARNING « page 2 sans texte » | Pas de page vide dans l'index, et l'utilisateur est prévenu |
+| `test_missing_file_raises_pdf_load_error` | Fichier absent → `PDFLoadError` « introuvable » | Erreur claire |
+| `test_corrupted_file_raises_pdf_load_error` | Faux PDF → `PDFLoadError` « corrompu » | On ne plante pas sur une erreur obscure de PyMuPDF |
+| `test_password_protected_pdf_raises_pdf_load_error` | PDF chiffré → `PDFLoadError` « mot de passe » | Cas réel fréquent |
+| `test_directory_skips_bad_files_and_duplicates` | Dossier `a`, `a_copie`, `b`, `casse` → seuls `a` et `b` sont gardés | Un fichier cassé ne bloque pas le lot ; pas de double indexation |
+| `test_missing_directory_raises_pdf_load_error` | Dossier absent → `PDFLoadError` | Erreur de configuration détectée |
+
+**Techniques utilisées :**
+- **`tmp_path`** (fixture pytest) : un dossier temporaire **neuf pour chaque test**, supprimé automatiquement. Les tests ne touchent jamais `data/raw/`.
+- **`create_pdf()`** : fabrique de **petits PDF de test** avec PyMuPDF (`new_page()` + `insert_text()`). Les tests sont rapides et **déterministes**, sans dépendre de mes vrais fichiers.
+- **`caplog.at_level(logging.WARNING)`** : capture les logs pour vérifier qu'un avertissement a bien été émis.
+- **`shutil.copy`** : crée une copie octet pour octet, donc un vrai doublon.
+
+**Lancer seulement ces tests :**
+```powershell
+python -m pytest tests/unit/test_pdf_loader.py -v
+```
+
+**Résultat réel (2026-10-11)** : 9 passed (23 au total, en 0.59s)
+
+### Notions apprises
+
+**Fonction de hachage (SHA-256)**
+- **Définition** : une fonction qui transforme des données de n'importe quelle taille en une **empreinte** de taille fixe (256 bits = 64 caractères hexadécimaux).
+- **Propriétés** :
+  - **déterministe** : le même contenu donne toujours le même hash ;
+  - **effet avalanche** : changer un seul octet change complètement le hash ;
+  - **sens unique** : impossible de retrouver le contenu à partir du hash.
+- **Exemple** : `SHA-256("abc")` = `ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad`. On garde les 16 premiers caractères : `ba7816bf8f01cfea`.
+- **Rôle dans le RAG** : `document_id` identifie un document par son **contenu**. Un même PDF renommé est reconnu comme doublon, et ne sera pas indexé deux fois dans ChromaDB (Phase 5).
+
+**Pourquoi 16 caractères et pas 64 ?**
+- 16 caractères hexadécimaux = 64 bits, soit environ 18 milliards de milliards de valeurs possibles. Le risque que deux documents différents aient le même id est négligeable pour notre projet.
+- **Compromis** : les ids sont plus courts et lisibles dans les logs, avec une sécurité un peu moindre (sans importance ici).
+
+**Lecture par morceaux (`while block := file.read(...)`)**
+- On lit le fichier par blocs de 1 Mo au lieu de tout charger en mémoire : un PDF de 500 Mo ne saturera pas la RAM.
+- `:=` (opérateur « morse ») affecte **et** teste en une seule expression : « tant que le bloc lu n'est pas vide ».
+
+**Exception personnalisée (`PDFLoadError`)**
+- **Définition** : une classe d'erreur propre au projet : `class PDFLoadError(Exception)`.
+- **Pourquoi** : les modules appelants n'ont qu'**une seule** erreur à gérer (`except PDFLoadError`), sans connaître les erreurs internes de PyMuPDF.
+- **`raise ... from error`** : garde l'erreur d'origine comme **cause**, visible dans la trace pour le débogage.
+
+**Traiter un lot sans tout arrêter**
+- Dans `load_pdfs_from_directory`, un fichier en erreur → `logger.error` + `continue`.
+- **Pourquoi** : sur 100 PDF, un seul fichier corrompu ne doit pas empêcher d'indexer les 99 autres.
+
+**`set` pour le dédoublonnage**
+- Un `set` (ensemble) vérifie `if x in seen` **instantanément**, quelle que soit sa taille, alors qu'une liste doit parcourir tous ses éléments.
+
+**Arguments de logging (`%s`, `%d`)**
+- `logger.info("%s : %d page(s)", nom, nb)` plutôt qu'une f-string : le texte n'est construit **que si** le message s'affiche vraiment.
+
+### À retenir
+
+- Un identifiant basé sur le **contenu** (hash) permet de détecter les doublons.
+- Une exception métier unique (`PDFLoadError`) simplifie la gestion des erreurs pour les appelants.
+- Dans un traitement par lot, on journalise l'erreur et on continue.
+- Tester avec des fichiers **générés** dans `tmp_path`, jamais avec ses vraies données.
+
 ---
 
 # Registre des tests (pytest)
@@ -813,7 +911,8 @@ python -m pytest tests/unit/test_models.py -v
 | `tests/unit/test_config.py` | `app/core/config.py` | 4 | 1.5-A | [voir](#étape-15-a--configuration-centralisée) |
 | `tests/unit/test_logging_config.py` | `app/core/logging_config.py` | 4 | 1.5-B | [voir](#étape-15-b--logging) |
 | `tests/unit/test_models.py` | `app/models.py` | 6 | 2.2 | [voir](#étape-22--structure-de-données-dune-page) |
-| **Total** | | **14** | | |
+| `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
+| **Total** | | **23** | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -824,6 +923,7 @@ python -m pytest tests/unit/test_models.py -v
 | 2026-10-11 | 1.5-B | `python -m pytest tests -v` | 8 passed in 0.25s |
 | 2026-10-11 | 1.6 | `python -m pytest -q` (avant le premier commit) | 8 passed in 0.31s |
 | 2026-10-11 | 2.2 | `python -m pytest tests -v` | 14 passed in 0.30s |
+| 2026-10-11 | 2.3 | `python -m pytest tests -v` | 23 passed in 0.59s |
 
 ## Lire un résultat pytest
 
@@ -906,6 +1006,12 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Immuable (`frozen`) | Objet non modifiable après sa création | 2.2 |
 | `dataclasses.replace` | Crée une copie d'un objet avec certains champs modifiés | 2.2 |
 | Couplage | Dépendance entre deux modules ; on cherche à la réduire | 2.2 |
+| Hash (SHA-256) | Empreinte de taille fixe, déterministe, calculée à partir d'un contenu | 2.3 |
+| `document_id` | Identifiant d'un document = début du SHA-256 de son contenu | 2.3 |
+| Exception personnalisée | Classe d'erreur propre au projet (`PDFLoadError`) | 2.3 |
+| `raise ... from` | Relance une erreur en gardant sa cause d'origine | 2.3 |
+| `tmp_path` | Fixture pytest : dossier temporaire neuf pour chaque test | 2.3 |
+| Opérateur morse `:=` | Affecte une valeur et la teste dans la même expression | 2.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

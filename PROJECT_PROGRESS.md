@@ -7,8 +7,8 @@
 | Étape | Titre | Statut |
 |---|---|---|
 | 2.1 | Le format PDF et exploration de nos documents | ✅ Validée (2026-10-11) |
-| 2.2 | Structure de données d'une page (`app/models.py`) | 🔎 Implémentée, en attente de validation |
-| 2.3 | Chargeur PDF (`app/ingestion/pdf_loader.py`) | ⬜ À faire |
+| 2.2 | Structure de données d'une page (`app/models.py`) | ✅ Validée (2026-10-11) |
+| 2.3 | Chargeur PDF (`app/ingestion/pdf_loader.py`) | 🔎 Implémentée, en attente de validation |
 | 2.4 | Nettoyage du texte (`app/ingestion/text_cleaner.py`) | ⬜ À faire |
 | 2.5 | Validation sur les vrais PDF (test d'intégration + export `data/processed/`) | ⬜ À faire |
 
@@ -50,6 +50,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `scripts/inspect_pdfs.py` | 2.1 | Script d'exploration : pages, métadonnées, aperçu brut du texte de chaque PDF |
 | `app/models.py` | 2.2 | Dataclass `DocumentPage` (document_id, source, page_number, text), immuable et validée |
 | `tests/unit/test_models.py` | 2.2 | 6 tests : valeurs, 3 validations, immuabilité, `replace()` |
+| `app/ingestion/pdf_loader.py` | 2.3 | `compute_document_id`, `load_pdf`, `load_pdfs_from_directory`, `PDFLoadError` |
+| `tests/unit/test_pdf_loader.py` | 2.3 | 9 tests sur des PDF générés dans `tmp_path` |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -67,6 +69,9 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **Logging** : module standard `logging`, sans bibliothèque externe. `setup_logging()` n'est appelée qu'aux points d'entrée ; les modules utilisent `logging.getLogger(__name__)`. Sortie console sur stderr seulement (pas de fichier de log pour le MVP). Le fichier s'appelle `logging_config.py` pour ne pas masquer le module standard `logging`.
 - **`app/models.py`** (écart avec l'arborescence de CLAUDE.md) : module commun pour les structures de données partagées (page, puis chunk et résultat de recherche). Il évite que `vectorstore` ou `retrieval` importent `ingestion`. On utilise des **dataclasses** (bibliothèque standard), et non Pydantic, qui sera réservé aux frontières de l'API (Phase 9).
 - **`DocumentPage` immuable** (`frozen=True`) : chaque étape crée une nouvelle page (`dataclasses.replace`) au lieu de modifier l'existante.
+- **`document_id`** = les 16 premiers caractères hexadécimaux du SHA-256 du **contenu** du fichier. Deux fichiers identiques portant des noms différents ont donc le même id, et le doublon n'est chargé qu'une fois.
+- **Gestion des erreurs du chargeur** : une seule exception métier, `PDFLoadError` (fichier absent, corrompu ou protégé). Le chargement d'un dossier ignore les fichiers en erreur (`logger.error`) sans s'arrêter.
+- **Pages sans texte** : ignorées avec un `logger.warning`, car elles sont peut-être scannées. Pas d'OCR pour le MVP.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -150,6 +155,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - `ruff check` : OK ; `ruff format --check` : 16 fichiers déjà formatés
 - Démonstration : `DocumentPage(..., page_number=0, ...)` lève bien `ValueError: page_number doit être >= 1 (reçu : 0)`
 
+Étape 2.3, vérifiée le 2026-10-11 :
+
+- `ruff format` a reformaté 2 fichiers (lignes trop longues) ; `ruff check` : OK
+- `python -m pytest tests -v` : **23 passed** (14 + 9 nouveaux) en 0.59s
+- Sur les vrais PDF (`load_pdfs_from_directory`) : 3 documents, 6 pages ; ids `49289fd3ade5e236`, `b2304beac24baf07`, `8a9457a4c9ec61c1`
+
 ## Données de travail
 
 - `data/raw/` contient 3 PDF en **français** : `01_introduction_rag.pdf`, `02_embeddings_recherche_vectorielle.pdf`, `03_evaluation_rag.pdf`. Il faudra donc un modèle d'embeddings multilingue en Phase 4.
@@ -163,4 +174,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-2.3 — Chargeur PDF (après validation de 2.2).
+2.4 — Nettoyage du texte (après validation de 2.3).
