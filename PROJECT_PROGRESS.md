@@ -2,7 +2,15 @@
 
 ## Phase en cours
 
-**Phase 2 — Ingestion** (pas encore commencée)
+**Phase 2 — Ingestion**
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 2.1 | Le format PDF et exploration de nos documents | 🔎 Implémentée, en attente de validation |
+| 2.2 | Structure de données d'une page (`app/models.py`) | ⬜ À faire |
+| 2.3 | Chargeur PDF (`app/ingestion/pdf_loader.py`) | ⬜ À faire |
+| 2.4 | Nettoyage du texte (`app/ingestion/text_cleaner.py`) | ⬜ À faire |
+| 2.5 | Validation sur les vrais PDF (test d'intégration + export `data/processed/`) | ⬜ À faire |
 
 Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
 
@@ -39,6 +47,7 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `.gitignore` | 1.6 | Exclut `.venv/`, `.env`, caches, `__pycache__`, contenu de `data/` et `storage/` (sauf `.gitkeep`) |
 | `README.md` | 1.6 | README minimal (installation, tests) ; version complète en Phase 12 |
 | `.git/` | 1.6 | Dépôt Git local (`git init`, branche `main`) |
+| `scripts/inspect_pdfs.py` | 2.1 | Script d'exploration : pages, métadonnées, aperçu brut du texte de chaque PDF |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -54,6 +63,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - FastAPI et Streamlit seront ajoutés en Phases 9 et 10, quand on en aura besoin.
 - **Configuration** : pydantic-settings, préfixe `RAG_`, priorité variable d'environnement > `.env` > défaut. Les chemins relatifs sont résolus depuis `PROJECT_ROOT`. Les paramètres de chaque phase (chunking, embeddings, Ollama…) seront ajoutés à `Settings` au moment où on les étudiera.
 - **Logging** : module standard `logging`, sans bibliothèque externe. `setup_logging()` n'est appelée qu'aux points d'entrée ; les modules utilisent `logging.getLogger(__name__)`. Sortie console sur stderr seulement (pas de fichier de log pour le MVP). Le fichier s'appelle `logging_config.py` pour ne pas masquer le module standard `logging`.
+- **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
+- **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
 - **LLM : Ollama uniquement** (décision de l'étudiant, 2026-10-11). C'est une solution 100 % locale et gratuite. Avec 8 Go de RAM et une GTX 1650 (4 Go de VRAM), on vise un modèle d'environ 3B paramètres. Le module `generation/llm.py` restera derrière une interface simple, pour pouvoir changer de fournisseur plus tard si besoin.
 
@@ -118,6 +129,17 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - Avertissements `LF will be replaced by CRLF` : normaux avec `autocrlf=true`
 - `git push -u origin main` : OK, `main` suit `origin/main` ; `git ls-remote` confirme `b289182` sur GitHub
 
+Étape 2.1, vérifiée le 2026-10-11 (`python -m scripts.inspect_pdfs`) :
+
+- 3 PDF de 2 pages chacun, environ 72 Ko, au format PDF 1.4
+- Texte bien extrait : PDF natifs, pas scannés, donc pas besoin d'OCR
+- Métadonnées vides (aucun titre ni auteur) : le titre devra venir du nom de fichier ou du contenu
+- Défauts repérés, à traiter en 2.4 :
+  - en-tête répété sur chaque page : `Corpus pédagogique RAG • Document de démonstration\nPage N\n`
+  - sauts de ligne `\n` au milieu des phrases (retours à la ligne de mise en page)
+  - apostrophe typographique `’` (U+2019) au lieu de `'`
+- `ruff check` et `ruff format --check` sur `scripts/` : OK
+
 ## Données de travail
 
 - `data/raw/` contient 3 PDF en **français** : `01_introduction_rag.pdf`, `02_embeddings_recherche_vectorielle.pdf`, `03_evaluation_rag.pdf`. Il faudra donc un modèle d'embeddings multilingue en Phase 4.
@@ -131,4 +153,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-**Phase 2 — Ingestion**, étape 2.1 (chargement des PDF avec PyMuPDF).
+2.2 — Structure de données d'une page (après validation de 2.1).

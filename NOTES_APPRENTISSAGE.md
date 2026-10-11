@@ -13,6 +13,8 @@
   - [1.5-A — Configuration centralisée](#étape-15-a--configuration-centralisée)
   - [1.5-B — Logging](#étape-15-b--logging)
   - [1.6 — Git et GitHub](#étape-16--git-et-github)
+- [Phase 2 — Ingestion](#phase-2--ingestion)
+  - [2.1 — Le format PDF et exploration](#étape-21--le-format-pdf-et-exploration-de-nos-documents)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -603,6 +605,88 @@ Répertoire de travail ──git add──► Zone de staging (index) ──git 
 
 ---
 
+# Phase 2 — Ingestion
+
+**Objectif de la phase** : transformer des fichiers PDF en **texte propre, découpé par page, avec ses métadonnées** (document, page). C'est la matière première de tout le RAG : *garbage in, garbage out*.
+
+## Étape 2.1 — Le format PDF et exploration de nos documents
+
+> Statut : implémentée le 2026-10-11, en attente de validation
+
+### Ce que j'ai fait
+
+- Créé `scripts/inspect_pdfs.py` : un script commenté ligne par ligne qui affiche, pour chaque PDF, ses pages, ses métadonnées et un aperçu brut du texte.
+- Lancé :
+  ```powershell
+  python -m scripts.inspect_pdfs
+  ```
+- **Ce que j'ai observé sur mes 3 PDF** :
+
+  | Constat | Conséquence pour le RAG |
+  |---|---|
+  | 2 pages chacun, texte bien extrait | PDF natifs (pas scannés) : pas besoin d'OCR |
+  | Métadonnées vides (`{'format': 'PDF 1.4'}`) | Impossible de compter sur le titre interne du PDF |
+  | En-tête répété : `Corpus pédagogique RAG • Document de démonstration\nPage 1` | Bruit identique sur chaque page, à retirer (2.4) |
+  | `\n` au milieu des phrases : `...un système de recherche\nd’informations...` | Retours à la ligne de mise en page, à recoller (2.4) |
+  | Apostrophe typographique `’` au lieu de `'` | À normaliser (2.4) |
+
+### Tests (pytest)
+
+Pas de test automatisé à cette étape : c'est une étape d'**exploration**. Les observations ci-dessus serviront à écrire les tests du chargeur (2.3) et du nettoyage (2.4).
+
+### Notions apprises
+
+**Format PDF**
+- **Définition** : un format de **mise en page**, pas un format de texte. Un PDF décrit *où dessiner* chaque caractère sur la page (coordonnées x, y, police).
+- **Conséquence** : le PDF ne connaît ni les « phrases », ni les « paragraphes », ni les « lignes logiques ». L'outil d'extraction doit **reconstruire** le texte à partir des positions des caractères.
+- **Exemple** : la fin de ligne visuelle après « recherche » devient un `\n` dans le texte extrait, même si la phrase continue.
+
+**PDF natif vs PDF scanné**
+- **Natif** : généré par un logiciel (Word, LaTeX…). Le texte existe vraiment dans le fichier et `get_text()` le renvoie.
+- **Scanné** : une **image** de page. `get_text()` renvoie `""` ; il faudrait de l'**OCR** (reconnaissance optique de caractères).
+- **Comment le détecter** : une page avec 0 caractère extrait est probablement une image.
+
+**Défauts classiques d'extraction PDF**
+- En-têtes et pieds de page répétés sur chaque page.
+- Sauts de ligne de mise en page au milieu des phrases.
+- Mots coupés par une césure (`recher-\nche`).
+- Ligatures (`ﬁ` en un seul caractère au lieu de `f` + `i`).
+- Colonnes mélangées dans un mauvais ordre de lecture.
+
+**Pourquoi c'est crucial pour le RAG (*garbage in, garbage out*)**
+- Un en-tête répété sur chaque chunk « pollue » les embeddings : tous les chunks se ressemblent un peu plus.
+- Une phrase coupée par des `\n` est moins bien comprise par le modèle d'embeddings.
+- Des métadonnées perdues (numéro de page) rendent les **citations de sources** impossibles.
+
+**PyMuPDF : les objets de base**
+- `pymupdf.open(chemin)` → objet **Document** (le fichier entier).
+- `doc.page_count` → nombre de pages ; `doc.metadata` → dictionnaire (title, author…).
+- Itérer sur `doc` → objets **Page**.
+- `page.get_text()` → texte brut de la page.
+- **Numérotation** : PyMuPDF compte les pages **à partir de 0** ; on affiche **à partir de 1** (`enumerate(doc, start=1)`) pour les humains et les citations.
+
+**`with` (gestionnaire de contexte)**
+- **Définition** : garantit qu'une ressource (fichier, connexion) est **libérée à la fin du bloc**, même si une erreur survient.
+- **Exemple** : `with pymupdf.open(path) as doc:` referme le PDF automatiquement.
+
+**`repr()`**
+- Affiche une chaîne **avec ses caractères invisibles** (`\n`, `\t`). C'est l'outil idéal pour voir ce qu'il faudra nettoyer.
+
+**`if __name__ == "__main__":`**
+- Le bloc ne s'exécute que si le fichier est **lancé directement**, et pas s'il est importé par un autre module.
+
+**`print()` dans un script vs `logging`**
+- Ici, `print()` est correct : le **but** du script est d'afficher un rapport (la sortie normale du programme).
+- `logging` sert aux **messages de diagnostic** d'une application (étapes, avertissements, erreurs).
+
+### À retenir
+
+- Un PDF est une mise en page : il faut **reconstruire** le texte, et l'extraction n'est jamais parfaite.
+- Toujours **regarder ses données** avant d'écrire le code qui les traite.
+- Mes PDF : natifs, sans métadonnées utiles, avec un en-tête répété et des retours à la ligne à nettoyer.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -720,6 +804,12 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | CRLF / LF | Fins de ligne Windows / Linux | 1.6 |
 | Remote / `origin` | Copie distante du dépôt / son nom conventionnel | 1.6 |
 | `push` | Envoyer ses commits vers le remote | 1.6 |
+| PDF | Format de mise en page (positions des caractères), pas de texte structuré | 2.1 |
+| PDF natif / scanné | Texte réel extractible / image de page (nécessite l'OCR) | 2.1 |
+| OCR | Reconnaissance optique de caractères dans une image | 2.1 |
+| Garbage in, garbage out | Des données d'entrée de mauvaise qualité donnent de mauvais résultats | 2.1 |
+| `with` | Gestionnaire de contexte : libère la ressource à la fin du bloc | 2.1 |
+| `repr()` | Affiche une chaîne avec ses caractères invisibles | 2.1 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
