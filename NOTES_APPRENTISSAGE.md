@@ -15,6 +15,7 @@
   - [1.6 — Git et GitHub](#étape-16--git-et-github)
 - [Phase 2 — Ingestion](#phase-2--ingestion)
   - [2.1 — Le format PDF et exploration](#étape-21--le-format-pdf-et-exploration-de-nos-documents)
+  - [2.2 — Structure de données d'une page](#étape-22--structure-de-données-dune-page)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -611,7 +612,7 @@ Répertoire de travail ──git add──► Zone de staging (index) ──git 
 
 ## Étape 2.1 — Le format PDF et exploration de nos documents
 
-> Statut : implémentée le 2026-10-11, en attente de validation
+> Statut : validée le 2026-10-11
 
 ### Ce que j'ai fait
 
@@ -687,6 +688,93 @@ Pas de test automatisé à cette étape : c'est une étape d'**exploration**. Le
 
 ---
 
+## Étape 2.2 — Structure de données d'une page
+
+> Statut : implémentée le 2026-10-11, en attente de validation
+
+### Ce que j'ai fait
+
+- Créé `app/models.py` avec la dataclass `DocumentPage` : `document_id`, `source`, `page_number`, `text`.
+- Créé `tests/unit/test_models.py` (6 tests).
+- Démonstration :
+  ```powershell
+  python -c "from app.models import DocumentPage; print(DocumentPage('abc123', '01_introduction_rag.pdf', 1, 'Le RAG associe...'))"
+  # → DocumentPage(document_id='abc123', source='01_introduction_rag.pdf', page_number=1, text='Le RAG associe...')
+  ```
+  Avec `page_number=0` → `ValueError: page_number doit être >= 1 (reçu : 0)`.
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_models.py` · **Module testé** : `app/models.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_valid_page_keeps_its_values` | Les 4 champs gardent les valeurs données | Fonctionnement de base |
+| `test_page_number_zero_is_rejected` | `page_number=0` lève une `ValueError` | Détecte l'oubli du `+1` (PyMuPDF compte à partir de 0) |
+| `test_empty_document_id_is_rejected` | `document_id=""` lève une `ValueError` | Sans identifiant, pas de dédoublonnage possible |
+| `test_empty_source_is_rejected` | `source=""` lève une `ValueError` | Sans source, pas de citation possible |
+| `test_page_is_immutable` | `page.text = ...` lève une `FrozenInstanceError` | Garantit qu'aucun module ne modifie une page en douce |
+| `test_replace_creates_a_modified_copy` | `replace()` crée une copie modifiée, l'original reste intact | C'est ainsi que le nettoyage (2.4) produira ses pages |
+
+**Techniques utilisées :**
+- **Fonction d'aide `make_page(**overrides)`** : crée une page valide et ne change que le champ testé. Chaque test reste court et lisible.
+- **`pytest.raises(ValueError, match="page_number")`** : vérifie le **type** de l'erreur ET que son message contient le texte attendu.
+
+**Lancer seulement ces tests :**
+```powershell
+python -m pytest tests/unit/test_models.py -v
+```
+
+**Résultat réel (2026-10-11)** : 6 passed (14 au total, en 0.30s)
+
+### Notions apprises
+
+**Structure de données (modèle)**
+- **Définition** : une classe qui regroupe des informations liées, ici tout ce qu'on sait d'une page.
+- **Pourquoi pas un simple dictionnaire** `{"source": ..., "page": ...}` :
+
+  | Dictionnaire | Dataclass |
+  |---|---|
+  | Faute de frappe (`page["pagee"]`) découverte à l'exécution | Détectée par l'IDE (Pylance) dès l'écriture |
+  | Aucune garantie sur les clés présentes | Les 4 champs sont obligatoires |
+  | Pas de validation | `__post_init__` vérifie les valeurs |
+
+- **Rôle dans le RAG** : `DocumentPage` est le « contrat » entre le chargeur (2.3), le nettoyage (2.4) et le chunking (Phase 3).
+
+**`@dataclass`**
+- **Définition** : décorateur de la bibliothèque standard qui **génère automatiquement** `__init__`, `__repr__` (affichage lisible) et `__eq__` (comparaison) à partir des champs annotés.
+- **Exemple** : les 4 lignes `document_id: str` … suffisent ; pas besoin d'écrire `def __init__(self, document_id, ...)`.
+
+**`__post_init__`**
+- **Définition** : méthode appelée automatiquement **juste après** `__init__`. C'est l'endroit où l'on valide les valeurs.
+- **Principe** : un objet invalide ne doit **jamais exister**. On refuse sa création (*fail fast*, comme pour la configuration).
+
+**Immuabilité (`frozen=True`)**
+- **Définition** : une fois créé, l'objet ne peut plus être modifié.
+- **Pourquoi** : une page passe par plusieurs modules. Si l'un la modifiait, les autres verraient un texte différent sans le savoir, d'où des bugs difficiles à trouver.
+- **Comment « modifier » quand même** : `dataclasses.replace(page, text=nouveau)` crée une **nouvelle** page.
+
+**Dataclass vs Pydantic**
+- **Dataclass** : bibliothèque standard, légère, pour les objets **internes** au programme.
+- **Pydantic** : validation poussée et conversion de types, pour les données qui viennent de **l'extérieur** (`.env`, requêtes HTTP de l'API en Phase 9).
+
+**Pourquoi un module commun `app/models.py`**
+- `DocumentPage`, puis `Chunk`, seront utilisés par `ingestion`, `vectorstore` et `retrieval`.
+- Si `Chunk` était défini dans `ingestion/`, alors `vectorstore` devrait importer `ingestion`, ce qui crée un couplage inutile.
+- C'est un **écart justifié** par rapport à l'arborescence de CLAUDE.md.
+
+**Numérotation des pages à partir de 1**
+- PyMuPDF compte à partir de 0 (convention informatique).
+- Les citations s'adressent à des humains : « page 1 » = la première page. La conversion se fait **une seule fois**, dans le chargeur.
+
+### À retenir
+
+- Une dataclass plutôt qu'un dictionnaire pour les données qui circulent entre modules.
+- Valider dans `__post_init__` : un objet invalide ne doit pas exister.
+- `frozen=True` + `replace()` : on crée de nouvelles pages, on ne modifie jamais l'existante.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -724,7 +812,8 @@ Pas de test automatisé à cette étape : c'est une étape d'**exploration**. Le
 |---|---|---|---|---|
 | `tests/unit/test_config.py` | `app/core/config.py` | 4 | 1.5-A | [voir](#étape-15-a--configuration-centralisée) |
 | `tests/unit/test_logging_config.py` | `app/core/logging_config.py` | 4 | 1.5-B | [voir](#étape-15-b--logging) |
-| **Total** | | **8** | | |
+| `tests/unit/test_models.py` | `app/models.py` | 6 | 2.2 | [voir](#étape-22--structure-de-données-dune-page) |
+| **Total** | | **14** | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -733,6 +822,8 @@ Pas de test automatisé à cette étape : c'est une étape d'**exploration**. Le
 | 2026-10-11 | 1.5-A | `python -m pytest tests -v` | 4 passed in 0.26s |
 | 2026-10-11 | 1.5-A | après `ruff format` | 4 passed in 0.24s |
 | 2026-10-11 | 1.5-B | `python -m pytest tests -v` | 8 passed in 0.25s |
+| 2026-10-11 | 1.6 | `python -m pytest -q` (avant le premier commit) | 8 passed in 0.31s |
+| 2026-10-11 | 2.2 | `python -m pytest tests -v` | 14 passed in 0.30s |
 
 ## Lire un résultat pytest
 
@@ -810,6 +901,11 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Garbage in, garbage out | Des données d'entrée de mauvaise qualité donnent de mauvais résultats | 2.1 |
 | `with` | Gestionnaire de contexte : libère la ressource à la fin du bloc | 2.1 |
 | `repr()` | Affiche une chaîne avec ses caractères invisibles | 2.1 |
+| Dataclass | Classe dont `__init__`, `__repr__` et `__eq__` sont générés automatiquement | 2.2 |
+| `__post_init__` | Méthode appelée après `__init__`, utilisée pour valider | 2.2 |
+| Immuable (`frozen`) | Objet non modifiable après sa création | 2.2 |
+| `dataclasses.replace` | Crée une copie d'un objet avec certains champs modifiés | 2.2 |
+| Couplage | Dépendance entre deux modules ; on cherche à la réduire | 2.2 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
