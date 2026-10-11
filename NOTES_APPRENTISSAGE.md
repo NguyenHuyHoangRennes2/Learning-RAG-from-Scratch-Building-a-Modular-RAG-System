@@ -509,7 +509,7 @@ python -m pytest tests/unit/test_logging_config.py -v
 
 ## Étape 1.6 — Git et GitHub
 
-> Statut : en cours (dépôt initialisé ; premier commit et push à faire)
+> Statut : validée le 2026-10-11. **Fin de la Phase 1** 🎉
 
 ### Ce que j'ai fait
 
@@ -521,7 +521,22 @@ python -m pytest tests/unit/test_logging_config.py -v
   git check-ignore -v .venv .env data/raw/01_introduction_rag.pdf
   # → .gitignore:6:.venv/   .venv   (indique la règle qui exclut chaque fichier)
   ```
-- Premier commit et push GitHub : *à compléter*.
+- Premier commit et push :
+  ```powershell
+  python -m pytest                 # → 8 passed (jamais de commit avec des tests rouges)
+  git add .
+  git status                       # → 24 fichiers en "A" (added)
+  git commit -m "chore: initialisation du projet (structure, config, logging, tests)"
+  git remote add origin https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System.git
+  git push -u origin main          # → * [new branch] main -> main
+  ```
+- Résultat : commit `b289182`, 24 fichiers, publié sur GitHub.
+
+**Erreur rencontrée** : j'avais ajouté le remote, mais sans faire `git add` ni `git commit`. `git push` ne peut alors rien envoyer :
+`error: src refspec main does not match any` signifie « la branche `main` n'a aucun commit ».
+→ **L'ordre compte** : `add` → `commit` → `push`.
+
+**Avertissement normal** : `LF will be replaced by CRLF` vient de `core.autocrlf=true`, qui convertit les fins de ligne. Il est sans danger.
 
 ### Tests (pytest)
 

@@ -2,7 +2,11 @@
 
 ## Phase en cours
 
-**Phase 1 — Initialisation**
+**Phase 2 — Ingestion** (pas encore commencée)
+
+Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
+
+## Phase 1 — Initialisation
 
 ## Sous-étapes
 
@@ -14,7 +18,9 @@
 | 1.4 | Gestion des dépendances | ✅ Validée (2026-10-11) |
 | 1.5-A | Configuration centralisée (`config.py`, `.env.example`) | ✅ Validée (2026-10-11) |
 | 1.5-B | Logging (`logging_config.py`) | ✅ Validée (2026-10-11) |
-| 1.6 | Git : `.gitignore`, premier commit, GitHub | ⏳ En cours (dépôt initialisé ; commit et push à faire par l'étudiant) |
+| 1.6 | Git : `.gitignore`, premier commit, GitHub | ✅ Validée (2026-10-11) |
+
+**Phase 1 terminée le 2026-10-11.**
 
 ## Fichiers créés ou modifiés
 
@@ -107,7 +113,10 @@
 - `git init` : dépôt créé ; `core.autocrlf = true`
 - `git status --short --untracked-files=all` : 24 fichiers candidats, sans PDF, `.venv/`, caches ni `__pycache__`
 - `git check-ignore -v` : `.venv`, `.env`, `data/raw/*.pdf`, `__pycache__`, `.pytest_cache`, `.ruff_cache`, `storage/chroma/*` sont bien ignorés
-- Le commit et le push GitHub restent à faire par l'étudiant
+- `python -m pytest -q` avant le commit : 8 passed
+- Premier commit `b289182` « chore: initialisation du projet (structure, config, logging, tests) » : 24 fichiers, 1577 insertions
+- Avertissements `LF will be replaced by CRLF` : normaux avec `autocrlf=true`
+- `git push -u origin main` : OK, `main` suit `origin/main` ; `git ls-remote` confirme `b289182` sur GitHub
 
 ## Données de travail
 
@@ -122,4 +131,4 @@
 
 ## Prochaine sous-étape
 
-Fin de la 1.6 (premier commit et push GitHub), puis **Phase 2 — Ingestion**, étape 2.1.
+**Phase 2 — Ingestion**, étape 2.1 (chargement des PDF avec PyMuPDF).
