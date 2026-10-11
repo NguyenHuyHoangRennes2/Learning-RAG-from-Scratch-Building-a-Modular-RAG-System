@@ -17,6 +17,7 @@
   - [2.1 — Le format PDF et exploration](#étape-21--le-format-pdf-et-exploration-de-nos-documents)
   - [2.2 — Structure de données d'une page](#étape-22--structure-de-données-dune-page)
   - [2.3 — Chargeur PDF](#étape-23--chargeur-pdf)
+  - [2.4 — Nettoyage du texte](#étape-24--nettoyage-du-texte)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -783,7 +784,7 @@ python -m pytest tests/unit/test_models.py -v
 
 ## Étape 2.3 — Chargeur PDF
 
-> Statut : implémentée le 2026-10-11, en attente de validation
+> Statut : validée le 2026-10-11
 
 ### Ce que j'ai fait
 
@@ -873,6 +874,121 @@ python -m pytest tests/unit/test_pdf_loader.py -v
 
 ---
 
+## Étape 2.4 — Nettoyage du texte
+
+> Statut : implémentée le 2026-10-11, en attente de validation
+
+### Ce que j'ai fait
+
+- Créé `app/ingestion/text_cleaner.py` :
+  - **niveau page** : `normalize_unicode` → `join_wrapped_lines` (regroupés dans `clean_text`) ;
+  - **niveau document** : `remove_repeated_lines` (en-têtes et pieds de page) ;
+  - **ensemble** : `clean_pages`, qui orchestre le tout.
+- Créé `tests/unit/test_text_cleaner.py` (14 tests).
+- **Avant / après** sur mon vrai PDF :
+
+  | Avant (brut) | Après (nettoyé) |
+  |---|---|
+  | `Corpus pédagogique RAG • Document de démonstration\nPage 1\n...` | *(retiré)* |
+  | `...un système de recherche\nd’informations à un modèle...` | `...un système de recherche d'informations à un modèle...` |
+  | `...comme\ncontexte.\nCette approche...` | `...comme contexte.` ↵ `Cette approche...` (paragraphe gardé) |
+  | `\n2. Les deux pipelines fondamentaux\n` | titre gardé seul sur sa ligne |
+
+- Log DEBUG réel : `lignes répétées retirées : ['Corpus pédagogique RAG • Document de démonstration', 'Page #']`.
+- **Limite observée** : le titre du document est recollé à son sous-titre (`Introduction au Retrieval-Augmented Generation Document 1/3 • ...`). C'est acceptable pour le MVP.
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_text_cleaner.py` · **Module testé** : `app/ingestion/text_cleaner.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_typographic_apostrophe_is_replaced` | `d’informations` → `d'informations` | Une question tapée au clavier (`'`) doit correspondre au texte |
+| `test_ligature_is_decomposed` | `ﬁchier` (1 caractère) → `fichier` | Sinon, « fichier » ne serait pas reconnu |
+| `test_non_breaking_space_becomes_normal_space` | Espace insécable → espace normal | Espaces uniformes |
+| `test_layout_line_break_is_joined` | `recherche\nd'informations.` → une seule ligne | Les phrases sont reconstituées |
+| `test_line_break_after_sentence_is_kept` | `contexte.\nCette` garde son `\n` | Les paragraphes sont préservés (utile pour le chunking) |
+| `test_heading_stays_on_its_own_line` | Le titre `2. Les deux pipelines` reste seul | La structure du document est préservée |
+| `test_extra_spaces_and_blank_lines_are_removed` | Espaces multiples et lignes vides supprimés | Texte compact |
+| `test_whitespace_only_text_gives_empty_string` | Un texte fait d'espaces devient `""` | Cas limite |
+| `test_repeated_header_with_page_number_is_removed` | `Corpus RAG` + `Page 1`/`Page 2` retirés | Cas réel de mes PDF |
+| `test_single_page_document_is_unchanged` | Un document d'une page n'est pas modifié | Impossible de détecter une répétition sur une seule page |
+| `test_repeated_line_in_body_is_kept` | Une phrase identique **au milieu** des pages est gardée | On ne supprime jamais le contenu réel |
+| `test_clean_pages_keeps_metadata_and_cleans_text` | Texte propre ET `document_id`/`page_number` conservés | Les citations restent possibles |
+| `test_page_empty_after_cleaning_is_dropped` | Une page qui ne contenait que l'en-tête est retirée, avec un WARNING | Pas de page vide dans l'index |
+| `test_documents_are_cleaned_independently` | Une ligne répétée dans doc1 n'affecte pas doc2 | Le nettoyage se fait document par document |
+
+**Techniques utilisées :**
+- **Tests sur de petites chaînes** : pas besoin de PDF ; on teste chaque fonction pure avec un exemple minimal.
+- **Échappements Unicode** (`"’"`, `"ﬁ"`) : ils rendent visibles dans le code des caractères qu'on ne distingue pas à l'œil.
+
+**Mes erreurs, corrigées avant la première exécution :**
+- J'avais oublié que la page de doc2 passait aussi par `clean_text` (« Commun » est recollé à la ligne suivante).
+- J'utilisais `Ligne 1.`, `Ligne 6.`… qui ont **toutes** la signature `Ligne #.` : le test mélangeait deux effets. J'ai remplacé ces lignes par des mots.
+- **Leçon** : un test doit isoler **un seul** comportement.
+
+**Lancer seulement ces tests :**
+```powershell
+python -m pytest tests/unit/test_text_cleaner.py -v
+```
+
+**Résultat réel (2026-10-11)** : 14 passed (37 au total, en 0.46s)
+
+### Notions apprises
+
+**Pourquoi nettoyer (*garbage in, garbage out*)**
+- Un en-tête répété sur chaque page se retrouverait dans **chaque chunk** : tous les embeddings se ressembleraient un peu plus, et la recherche serait moins précise.
+- Des phrases coupées par des `\n` sont moins bien comprises par le modèle d'embeddings.
+
+**Normalisation Unicode (NFKC)**
+- **Définition** : un même texte visible peut s'écrire avec des caractères différents. NFKC les ramène à une forme **standard**.
+- **Exemples** : la ligature `ﬁ` (U+FB01) devient `f` + `i` ; l'espace insécable (U+00A0) et l'espace fine (U+202F, utilisée en français avant `:` ou `»`) deviennent un espace normal.
+- **Rôle** : « fichier » écrit avec ou sans ligature devient le même texte.
+
+**Expression régulière (regex)**
+- **Définition** : un mini-langage pour décrire des **motifs** de texte.
+- **Dans mon code** :
+
+  | Regex | Signification | Exemple reconnu |
+  |---|---|---|
+  | `\d+` | un ou plusieurs chiffres | `2`, `12` |
+  | `[ \t]+` | un ou plusieurs espaces ou tabulations | `"   "` |
+  | `^\d+(?:\.\d+)*\.\s+[A-ZÀ-Ý]` | début de ligne, numéro (`1.` ou `2.3.`), espace, majuscule | `1. Définition` |
+
+- `re.compile(...)` : prépare la regex **une seule fois**, pour la réutiliser rapidement.
+
+**Heuristique**
+- **Définition** : une règle simple qui marche **la plupart du temps**, sans garantie absolue.
+- **Mes heuristiques** :
+  1. une ligne présente en haut ou en bas de **toutes** les pages d'un document est un en-tête ou un pied de page ;
+  2. un `\n` après `. ! ? : »` est un vrai changement de paragraphe ; sinon c'est un retour à la ligne de mise en page ;
+  3. une ligne courte qui commence par `1. Majuscule` est un titre.
+- **Compromis** : simple et explicable, mais pas parfait (le titre du document reste collé à son sous-titre).
+
+**Signature d'une ligne (masquer les chiffres)**
+- `"Page 1"` et `"Page 2"` sont différentes, mais leur signature `"Page #"` est identique : on reconnaît la même ligne d'en-tête.
+
+**Intersection d'ensembles**
+- `set.intersection(*ensembles)` garde les éléments présents dans **tous** les ensembles : ici, les lignes présentes sur **toutes** les pages.
+
+**Fonction pure**
+- **Définition** : une fonction dont le résultat dépend **uniquement** de ses paramètres, sans effet de bord (ni fichier, ni variable globale).
+- **Exemples** : `normalize_unicode`, `join_wrapped_lines`, `clean_text`.
+- **Avantage** : très facile à tester avec un simple `assert f(entrée) == sortie`.
+
+**Pourquoi ne pas recoller les césures (`recher-\nche`)**
+- Le risque est de casser les mots composés coupés en fin de ligne : `question-\nréponse` deviendrait `questionréponse`.
+- Mes PDF n'en contiennent pas, donc on ne le fait pas (**YAGNI** : *You Aren't Gonna Need It*).
+
+### À retenir
+
+- Nettoyer en deux niveaux : **document** (lignes répétées), puis **page** (caractères et lignes).
+- Préférer des heuristiques **simples et explicables**, et documenter leurs limites.
+- Toujours vérifier le résultat sur les **vraies** données (avant / après).
+- Un test = **un** comportement isolé.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -912,7 +1028,8 @@ python -m pytest tests/unit/test_pdf_loader.py -v
 | `tests/unit/test_logging_config.py` | `app/core/logging_config.py` | 4 | 1.5-B | [voir](#étape-15-b--logging) |
 | `tests/unit/test_models.py` | `app/models.py` | 6 | 2.2 | [voir](#étape-22--structure-de-données-dune-page) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
-| **Total** | | **23** | | |
+| `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
+| **Total** | | **37** | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -924,6 +1041,8 @@ python -m pytest tests/unit/test_pdf_loader.py -v
 | 2026-10-11 | 1.6 | `python -m pytest -q` (avant le premier commit) | 8 passed in 0.31s |
 | 2026-10-11 | 2.2 | `python -m pytest tests -v` | 14 passed in 0.30s |
 | 2026-10-11 | 2.3 | `python -m pytest tests -v` | 23 passed in 0.59s |
+| 2026-10-11 | 2.4 | `python -m pytest tests -q` | 37 passed in 0.47s |
+| 2026-10-11 | 2.4 | après la correction Ruff SIM103 | 37 passed in 0.46s |
 
 ## Lire un résultat pytest
 
@@ -1012,6 +1131,12 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | `raise ... from` | Relance une erreur en gardant sa cause d'origine | 2.3 |
 | `tmp_path` | Fixture pytest : dossier temporaire neuf pour chaque test | 2.3 |
 | Opérateur morse `:=` | Affecte une valeur et la teste dans la même expression | 2.3 |
+| NFKC | Normalisation Unicode : ligatures, espaces spéciaux → forme standard | 2.4 |
+| Regex | Expression régulière : mini-langage pour décrire des motifs de texte | 2.4 |
+| Heuristique | Règle simple qui marche la plupart du temps, sans garantie | 2.4 |
+| Fonction pure | Résultat dépendant uniquement des paramètres, sans effet de bord | 2.4 |
+| Intersection | Éléments présents dans tous les ensembles | 2.4 |
+| YAGNI | « You Aren't Gonna Need It » : ne pas coder ce dont on n'a pas besoin | 2.4 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

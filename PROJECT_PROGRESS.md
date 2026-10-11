@@ -8,8 +8,8 @@
 |---|---|---|
 | 2.1 | Le format PDF et exploration de nos documents | ✅ Validée (2026-10-11) |
 | 2.2 | Structure de données d'une page (`app/models.py`) | ✅ Validée (2026-10-11) |
-| 2.3 | Chargeur PDF (`app/ingestion/pdf_loader.py`) | 🔎 Implémentée, en attente de validation |
-| 2.4 | Nettoyage du texte (`app/ingestion/text_cleaner.py`) | ⬜ À faire |
+| 2.3 | Chargeur PDF (`app/ingestion/pdf_loader.py`) | ✅ Validée (2026-10-11) |
+| 2.4 | Nettoyage du texte (`app/ingestion/text_cleaner.py`) | 🔎 Implémentée, en attente de validation |
 | 2.5 | Validation sur les vrais PDF (test d'intégration + export `data/processed/`) | ⬜ À faire |
 
 Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
@@ -52,6 +52,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_models.py` | 2.2 | 6 tests : valeurs, 3 validations, immuabilité, `replace()` |
 | `app/ingestion/pdf_loader.py` | 2.3 | `compute_document_id`, `load_pdf`, `load_pdfs_from_directory`, `PDFLoadError` |
 | `tests/unit/test_pdf_loader.py` | 2.3 | 9 tests sur des PDF générés dans `tmp_path` |
+| `app/ingestion/text_cleaner.py` | 2.4 | `normalize_unicode`, `join_wrapped_lines`, `clean_text`, `remove_repeated_lines`, `clean_pages` |
+| `tests/unit/test_text_cleaner.py` | 2.4 | 14 tests : Unicode, recollage des lignes, titres, en-têtes répétés, pipeline complet |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -72,6 +74,11 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **`document_id`** = les 16 premiers caractères hexadécimaux du SHA-256 du **contenu** du fichier. Deux fichiers identiques portant des noms différents ont donc le même id, et le doublon n'est chargé qu'une fois.
 - **Gestion des erreurs du chargeur** : une seule exception métier, `PDFLoadError` (fichier absent, corrompu ou protégé). Le chargement d'un dossier ignore les fichiers en erreur (`logger.error`) sans s'arrêter.
 - **Pages sans texte** : ignorées avec un `logger.warning`, car elles sont peut-être scannées. Pas d'OCR pour le MVP.
+- **Nettoyage par heuristiques simples et explicables** :
+  - en-têtes et pieds de page = lignes présentes dans les 3 premières ou 3 dernières lignes de **toutes** les pages d'un document (chiffres masqués : « Page 1 » = « Page 2 ») ;
+  - un saut de ligne est gardé après `. ! ? : »` ou autour d'un titre numéroté court ; sinon les lignes sont recollées ;
+  - normalisation NFKC et apostrophes `’` → `'`.
+  Pas de recollage des césures (`mot-\nsuite`), pour ne pas abîmer les mots composés ; nos PDF n'en contiennent pas.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -161,6 +168,14 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - `python -m pytest tests -v` : **23 passed** (14 + 9 nouveaux) en 0.59s
 - Sur les vrais PDF (`load_pdfs_from_directory`) : 3 documents, 6 pages ; ids `49289fd3ade5e236`, `b2304beac24baf07`, `8a9457a4c9ec61c1`
 
+Étape 2.4, vérifiée le 2026-10-11 :
+
+- 2 erreurs dans mes propres tests repérées à la relecture, avant la première exécution, et corrigées (résultat attendu de doc2 ; signatures « Ligne #. » identiques)
+- Ruff `SIM103` (renvoyer directement la condition) : corrigé
+- `python -m pytest tests -q` : **37 passed** (23 + 14 nouveaux) en 0.46s ; `ruff check` et `ruff format --check` : OK
+- Sur les vrais PDF : en-tête `Corpus pédagogique RAG • Document de démonstration` et `Page #` retirés des 3 documents ; 6 pages en entrée, 6 en sortie ; lignes recollées en paragraphes, titres de section gardés sur leur propre ligne, apostrophes normalisées
+- Limite observée : le titre du document est recollé à son sous-titre (`Introduction au Retrieval-Augmented Generation Document 1/3 • ...`). Acceptable pour le MVP.
+
 ## Données de travail
 
 - `data/raw/` contient 3 PDF en **français** : `01_introduction_rag.pdf`, `02_embeddings_recherche_vectorielle.pdf`, `03_evaluation_rag.pdf`. Il faudra donc un modèle d'embeddings multilingue en Phase 4.
@@ -174,4 +189,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-2.4 — Nettoyage du texte (après validation de 2.3).
+2.5 — Validation sur les vrais PDF (après validation de 2.4).
