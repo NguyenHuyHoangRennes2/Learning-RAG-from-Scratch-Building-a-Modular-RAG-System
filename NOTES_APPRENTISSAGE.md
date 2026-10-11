@@ -18,6 +18,7 @@
   - [2.2 — Structure de données d'une page](#étape-22--structure-de-données-dune-page)
   - [2.3 — Chargeur PDF](#étape-23--chargeur-pdf)
   - [2.4 — Nettoyage du texte](#étape-24--nettoyage-du-texte)
+  - [2.5 — Validation et test d'intégration](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -876,7 +877,7 @@ python -m pytest tests/unit/test_pdf_loader.py -v
 
 ## Étape 2.4 — Nettoyage du texte
 
-> Statut : implémentée le 2026-10-11, en attente de validation
+> Statut : validée le 2026-10-11
 
 ### Ce que j'ai fait
 
@@ -989,6 +990,119 @@ python -m pytest tests/unit/test_text_cleaner.py -v
 
 ---
 
+## Étape 2.5 — Validation sur les vrais PDF et test d'intégration
+
+> Statut : validée le 2026-10-11. **Fin de la Phase 2** 🎉
+
+### Ce que j'ai fait
+
+- Créé `scripts/ingest_preview.py` : **PDF → pages nettoyées → un fichier JSON par document** dans `data/processed/`.
+- Créé `tests/integration/test_ingestion_pipeline.py` : 2 tests qui enchaînent les modules.
+- Lancé sur mes vrais PDF :
+  ```powershell
+  python -m scripts.ingest_preview
+  ```
+  ```
+  INFO | app.ingestion.pdf_loader   | 3 document(s) chargé(s), 6 page(s) au total
+  INFO | app.ingestion.text_cleaner | Nettoyage : 6 page(s) en entrée, 6 page(s) en sortie
+  INFO | __main__                   | Exporté : 01_introduction_rag.json (2 page(s))
+  ...
+  ```
+- Format du JSON produit :
+  ```json
+  {
+    "document_id": "49289fd3ade5e236",
+    "source": "01_introduction_rag.pdf",
+    "pages": [
+      { "page_number": 1, "text": "...1. Définition et motivation\nLe Retrieval-Augmented Generation (RAG) est..." },
+      { "page_number": 2, "text": "5. Limites et bonnes pratiques\n..." }
+    ]
+  }
+  ```
+- Vérifié que `data/processed/*.json` est **ignoré par Git** (`git check-ignore`).
+
+### Tests (pytest)
+
+**Fichier** : `tests/integration/test_ingestion_pipeline.py` · **Modules testés ensemble** : `pdf_loader` + `text_cleaner` + `scripts/ingest_preview`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_pdf_is_loaded_and_cleaned` | PDF réaliste → `load_pdfs_from_directory` → `clean_pages` : en-tête retiré, titre seul, phrase recollée, métadonnées conservées | Les modules **fonctionnent ensemble** |
+| `test_cleaned_pages_are_exported_to_json` | Chaîne complète jusqu'au JSON : 1 fichier `cours.json`, 2 pages, accents lisibles | Le format de sortie est correct |
+
+**Technique** : `create_realistic_pdf()` fabrique un PDF qui reproduit les défauts de mes vrais documents (en-tête, « Page N », titre, ligne coupée), avec un **contenu différent par page**.
+
+**⚠️ Échec à la première exécution, et ce qu'il m'a appris :**
+- Symptôme : `assert [] == [1, 2]`, donc aucune page en sortie.
+- Diagnostic : j'ai lu les **logs capturés** par pytest (section « Captured log call ») : `cours.pdf : page 1 vide après nettoyage, ignorée`.
+- Cause : mes 2 pages de test étaient **identiques aux chiffres près**. Comme les chiffres sont masqués (`1. Titre` → `#. Titre`) et que les pages ne faisaient que 5 lignes (entièrement couvertes par les zones haut/bas de 3 lignes), **toutes** les lignes ont été prises pour des en-têtes.
+- Correction : des pages au contenu différent, comme dans un vrai document.
+- **Leçons** :
+  1. Les données de test doivent être **réalistes**.
+  2. Un échec révèle aussi une **limite du code** : une ligne identique en haut ou en bas de toutes les pages serait retirée même si c'est du contenu. Je l'ai documentée.
+  3. Diagnostiquer avec les **logs** avant de modifier le code.
+
+**Lancer seulement les tests d'intégration :**
+```powershell
+python -m pytest tests/integration -v
+```
+
+**Résultat réel (2026-10-11)** : 1re exécution 2 failed ; après correction **2 passed** (39 au total, en 0.49s)
+
+### Notions apprises
+
+**Test unitaire vs test d'intégration**
+
+| | Test unitaire | Test d'intégration |
+|---|---|---|
+| Portée | **Une** fonction, isolée | **Plusieurs** modules enchaînés |
+| Données | Minimales (petites chaînes) | Réalistes (un vrai PDF généré) |
+| Ce qu'il détecte | Un bug dans une fonction | Un problème **de raccordement** entre modules |
+| Dossier | `tests/unit/` | `tests/integration/` |
+
+- **Les deux sont nécessaires** : chaque fonction peut marcher seule sans que l'ensemble marche.
+
+**JSON (JavaScript Object Notation)**
+- **Définition** : un format texte standard pour stocker des données structurées (dictionnaires, listes, chaînes, nombres).
+- **Pourquoi ici** : lisible par un humain (pour vérifier le nettoyage) **et** par un programme (on pourra le relire).
+- **`json.dumps(data, ensure_ascii=False, indent=2)`** :
+  - `ensure_ascii=False` : écrit `é` au lieu de `é` ;
+  - `indent=2` : indente le fichier pour qu'il soit lisible.
+- **`encoding="utf-8"`** : toujours préciser l'encodage à l'écriture. Sous Windows, l'encodage par défaut n'est pas UTF-8.
+
+**Logger `__main__`**
+- Quand on lance `python -m scripts.ingest_preview`, la variable `__name__` du script vaut `"__main__"`. Le logger s'appelle donc `__main__` dans les logs.
+- Si le module est **importé** (par exemple par le test d'intégration), il s'appelle `scripts.ingest_preview`.
+
+**`Path.mkdir(parents=True, exist_ok=True)`**
+- Crée le dossier **et ses parents** si besoin, sans erreur s'il existe déjà.
+
+**`Path(source).stem`**
+- Le nom du fichier sans son extension : `Path("01_introduction_rag.pdf").stem` → `"01_introduction_rag"`.
+
+**Le pipeline d'ingestion (bilan de la Phase 2)**
+```
+data/raw/*.pdf
+   │  pdf_loader.load_pdfs_from_directory()   (lecture, document_id, doublons, erreurs)
+   ▼
+list[DocumentPage] brut
+   │  text_cleaner.clean_pages()              (en-têtes, Unicode, lignes recollées)
+   ▼
+list[DocumentPage] propre ──► Phase 3 : chunking
+   │  (aperçu) scripts/ingest_preview.export_pages()
+   ▼
+data/processed/*.json
+```
+
+### À retenir
+
+- Tests unitaires **et** tests d'intégration : les deux sont nécessaires.
+- Des données de test **réalistes**.
+- Face à un échec, lire les **logs capturés** avant de modifier le code.
+- Exporter un résultat intermédiaire lisible (JSON) pour **vérifier à l'œil** ce qu'on va indexer.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1029,7 +1143,8 @@ python -m pytest tests/unit/test_text_cleaner.py -v
 | `tests/unit/test_models.py` | `app/models.py` | 6 | 2.2 | [voir](#étape-22--structure-de-données-dune-page) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
 | `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
-| **Total** | | **37** | | |
+| `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
+| **Total** | | **39** (37 unitaires + 2 d'intégration) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1043,6 +1158,8 @@ python -m pytest tests/unit/test_text_cleaner.py -v
 | 2026-10-11 | 2.3 | `python -m pytest tests -v` | 23 passed in 0.59s |
 | 2026-10-11 | 2.4 | `python -m pytest tests -q` | 37 passed in 0.47s |
 | 2026-10-11 | 2.4 | après la correction Ruff SIM103 | 37 passed in 0.46s |
+| 2026-10-11 | 2.5 | `python -m pytest tests -v` (1re exécution) | **2 failed**, 37 passed : PDF de test irréaliste |
+| 2026-10-11 | 2.5 | après correction du PDF de test | 39 passed in 0.49s |
 
 ## Lire un résultat pytest
 
@@ -1137,6 +1254,10 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Fonction pure | Résultat dépendant uniquement des paramètres, sans effet de bord | 2.4 |
 | Intersection | Éléments présents dans tous les ensembles | 2.4 |
 | YAGNI | « You Aren't Gonna Need It » : ne pas coder ce dont on n'a pas besoin | 2.4 |
+| JSON | Format texte standard pour des données structurées | 2.5 |
+| `ensure_ascii=False` | Garde les accents lisibles dans le JSON | 2.5 |
+| `__main__` | Valeur de `__name__` quand un fichier est lancé directement | 2.5 |
+| `Path.stem` | Nom de fichier sans extension | 2.5 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

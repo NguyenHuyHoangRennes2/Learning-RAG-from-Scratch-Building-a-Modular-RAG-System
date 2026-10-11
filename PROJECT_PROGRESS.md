@@ -9,8 +9,10 @@
 | 2.1 | Le format PDF et exploration de nos documents | ✅ Validée (2026-10-11) |
 | 2.2 | Structure de données d'une page (`app/models.py`) | ✅ Validée (2026-10-11) |
 | 2.3 | Chargeur PDF (`app/ingestion/pdf_loader.py`) | ✅ Validée (2026-10-11) |
-| 2.4 | Nettoyage du texte (`app/ingestion/text_cleaner.py`) | 🔎 Implémentée, en attente de validation |
-| 2.5 | Validation sur les vrais PDF (test d'intégration + export `data/processed/`) | ⬜ À faire |
+| 2.4 | Nettoyage du texte (`app/ingestion/text_cleaner.py`) | ✅ Validée (2026-10-11) |
+| 2.5 | Validation sur les vrais PDF (test d'intégration + export `data/processed/`) | ✅ Validée (2026-10-11) |
+
+**Phase 2 terminée le 2026-10-11.**
 
 Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
 
@@ -54,6 +56,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_pdf_loader.py` | 2.3 | 9 tests sur des PDF générés dans `tmp_path` |
 | `app/ingestion/text_cleaner.py` | 2.4 | `normalize_unicode`, `join_wrapped_lines`, `clean_text`, `remove_repeated_lines`, `clean_pages` |
 | `tests/unit/test_text_cleaner.py` | 2.4 | 14 tests : Unicode, recollage des lignes, titres, en-têtes répétés, pipeline complet |
+| `scripts/ingest_preview.py` | 2.5 | Point d'entrée : PDF → pages nettoyées → un JSON par document dans `data/processed/` (`export_pages`) |
+| `tests/integration/test_ingestion_pipeline.py` | 2.5 | 2 tests d'intégration : chargeur + nettoyage, puis export JSON, sur un PDF réaliste généré |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -176,6 +180,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - Sur les vrais PDF : en-tête `Corpus pédagogique RAG • Document de démonstration` et `Page #` retirés des 3 documents ; 6 pages en entrée, 6 en sortie ; lignes recollées en paragraphes, titres de section gardés sur leur propre ligne, apostrophes normalisées
 - Limite observée : le titre du document est recollé à son sous-titre (`Introduction au Retrieval-Augmented Generation Document 1/3 • ...`). Acceptable pour le MVP.
 
+Étape 2.5, vérifiée le 2026-10-11 :
+
+- 1re exécution : **2 tests d'intégration en échec** (`assert [] == [1, 2]`). Logs capturés : « page 1 vide après nettoyage ». Cause : mon PDF de test avait 2 pages identiques aux chiffres près, et des pages de 5 lignes, entièrement couvertes par les zones haut/bas de 3 lignes. Toutes les lignes ont donc été prises pour des en-têtes. Correction : un contenu différent par page (réaliste).
+- Après correction : `python -m pytest tests -q` → **39 passed** (37 unitaires + 2 d'intégration) en 0.49s ; `ruff check` : OK
+- `python -m scripts.ingest_preview` sur les vrais PDF : 3 JSON écrits dans `data/processed/` (2 pages chacun), accents lisibles ; `git check-ignore` confirme qu'ils sont ignorés
+
 ## Données de travail
 
 - `data/raw/` contient 3 PDF en **français** : `01_introduction_rag.pdf`, `02_embeddings_recherche_vectorielle.pdf`, `03_evaluation_rag.pdf`. Il faudra donc un modèle d'embeddings multilingue en Phase 4.
@@ -183,10 +193,11 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Problèmes connus / décisions en attente
 
+- **Limite de `remove_repeated_lines`** : une ligne identique (chiffres masqués) dans les 3 premières ou 3 dernières lignes de **toutes** les pages est retirée, même si c'est du contenu. Risque surtout pour les documents aux pages très courtes et très similaires. Pas de souci sur le corpus actuel.
 - Avec PyMuPDF, utiliser `import pymupdf` : l'ancien nom `import fitz` affiche un avertissement de dépréciation.
 - Seules les dépendances directes sont figées ; les dépendances transitives ne le sont pas. Un fichier de verrouillage complet (`pip freeze`) pourra être ajouté en Phase 12 (Docker).
 - Ollama n'est pas encore installé. Ce sera nécessaire au plus tard en Phase 7.
 
 ## Prochaine sous-étape
 
-2.5 — Validation sur les vrais PDF (après validation de 2.4).
+Validation de 2.5 (fin de la Phase 2), puis **Phase 3 — Chunking**.
