@@ -1,0 +1,28 @@
+# --- Python : bytecode compilé ---
+__pycache__/
+*.py[cod]
+
+# --- Environnement virtuel (recréé avec requirements*.txt) ---
+.venv/
+
+# --- Configuration locale et secrets (seul .env.example est versionné) ---
+.env
+
+# --- Caches des outils ---
+.pytest_cache/
+.ruff_cache/
+
+# --- Données : documents privés et données générées ---
+# On ignore le contenu des dossiers, mais on garde les .gitkeep.
+data/raw/*
+!data/raw/.gitkeep
+data/processed/*
+!data/processed/.gitkeep
+storage/chroma/*
+!storage/chroma/.gitkeep
+
+# --- IDE et système ---
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store

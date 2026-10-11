@@ -1,0 +1,18 @@
+# Dépendances d'exécution du projet RAG.
+# Installation : python -m pip install -r requirements.txt
+# Versions figées (==) : testées le 2026-10-11 avec Python 3.13.14 sous Windows.
+
+# --- Ingestion : extraction du texte des PDF, page par page ---
+pymupdf==1.28.2
+
+# --- Embeddings : modèles de vectorisation (installe aussi PyTorch) ---
+sentence-transformers==6.1.0
+
+# --- Base vectorielle locale et persistante ---
+chromadb==1.5.9
+
+# --- Configuration centralisée et typée (lecture du fichier .env) ---
+pydantic-settings==2.15.0
+
+# --- Client HTTP pour appeler l'API locale d'Ollama ---
+httpx==0.28.1
