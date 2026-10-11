@@ -19,6 +19,8 @@
   - [2.3 — Chargeur PDF](#étape-23--chargeur-pdf)
   - [2.4 — Nettoyage du texte](#étape-24--nettoyage-du-texte)
   - [2.5 — Validation et test d'intégration](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration)
+- [Phase 3 — Chunking](#phase-3--chunking)
+  - [3.1 — Principes du chunking et paramètres](#étape-31--principes-du-chunking-et-paramètres)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1103,6 +1105,136 @@ data/processed/*.json
 
 ---
 
+# Phase 3 — Chunking
+
+**Objectif de la phase** : découper les pages propres en **chunks** (passages) d'une taille adaptée à la recherche et au LLM, sans perdre les métadonnées (document, page).
+
+## Étape 3.1 — Principes du chunking et paramètres
+
+> Statut : implémentée le 2026-10-11, en attente de validation
+
+### Ce que j'ai fait
+
+- Mesuré mes pages nettoyées :
+
+  | Document | Page | Caractères | Paragraphes | Paragraphe le plus long |
+  |---|---|---|---|---|
+  | 01_introduction_rag | 1 | 2 386 | 13 | 357 |
+  | 01_introduction_rag | 2 | 542 | 3 | 289 |
+  | 02_embeddings_recherche_vectorielle | 1 | 2 315 | 15 | 276 |
+  | 02_embeddings_recherche_vectorielle | 2 | 536 | 3 | 274 |
+  | 03_evaluation_rag | 1 | 2 454 | 16 | 282 |
+  | 03_evaluation_rag | 2 | 794 | 4 | 294 |
+
+- Ajouté à `app/core/config.py` : `chunk_size=800`, `chunk_overlap=150`, `chunk_strategy="sentence"`, et un **validateur** qui refuse `overlap >= size`.
+- Ajouté les variables correspondantes à `.env.example`.
+- Ajouté 4 tests à `tests/unit/test_config.py`.
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_config.py` (4 tests ajoutés) · **Module testé** : `app/core/config.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_chunking_default_values` | Par défaut : 800 / 150 / `"sentence"` | Valeurs connues et documentées |
+| `test_overlap_greater_or_equal_to_size_is_rejected` | `size=100, overlap=100` → `ValidationError` | Le découpage n'avancerait jamais (pas = 0) |
+| `test_non_positive_chunk_size_is_rejected` | `size=0` → `ValidationError` | Une taille nulle n'a pas de sens |
+| `test_unknown_chunk_strategy_is_rejected` | `strategy="semantic"` → `ValidationError` | Seules les stratégies implémentées sont acceptées |
+
+**Lancer ces tests :**
+```powershell
+python -m pytest tests/unit/test_config.py -v
+```
+
+**Résultat réel (2026-10-11)** : 8 passed dans ce fichier (43 au total, en 0.52s)
+
+### Notions apprises
+
+**Chunk et chunking**
+- **Définition** : un *chunk* est un **morceau de texte** (un passage). Le *chunking* consiste à découper un document en chunks.
+- **Pourquoi c'est nécessaire** :
+  1. **Limite du modèle d'embeddings** : il ne lit qu'un nombre maximal de *tokens* ; au-delà, le texte est **tronqué** (ignoré).
+  2. **Précision de la recherche** : un vecteur qui résume une page entière « dilue » plusieurs sujets ; un passage court et ciblé correspond mieux à une question précise.
+  3. **Taille du prompt** : on envoie au LLM seulement les quelques passages utiles, pas des documents entiers.
+- **Rôle dans le RAG** : le chunk est **l'unité** qu'on vectorise, qu'on stocke, qu'on retrouve et qu'on cite.
+
+**Chunk size (taille)**
+- **Définition** : la longueur maximale d'un chunk (ici en **caractères**).
+- **Compromis** :
+
+  | Chunks trop petits (ex. 100 car.) | Chunks trop grands (ex. 3 000 car.) |
+  |---|---|
+  | Perte du contexte : « Il le nettoie » (qui ? quoi ?) | Plusieurs sujets mélangés : vecteur flou |
+  | Beaucoup de chunks à stocker et à chercher | Risque de dépasser la limite du modèle (troncature) |
+  | Réponse précise mais incomplète | Prompt du LLM plus long et plus cher |
+
+**Overlap (chevauchement)**
+- **Définition** : nombre de caractères **repris de la fin du chunk précédent** au début du chunk suivant.
+- **Pourquoi** : sans chevauchement, une idée coupée à la frontière entre deux chunks n'apparaît **entière** dans aucun des deux.
+- **Contrainte** : `overlap < size`, sinon le découpage n'avance pas.
+
+**Formule : nombre de chunks (stratégie à taille fixe)**
+
+$$
+n = \left\lceil \frac{L - o}{s - o} \right\rceil \quad \text{(si } L > s\text{, sinon } n = 1\text{)}
+$$
+
+| Variable | Signification |
+|---|---|
+| $L$ | longueur du texte (caractères) |
+| $s$ | taille d'un chunk (*chunk size*) |
+| $o$ | chevauchement (*overlap*) |
+| $s - o$ | **pas** : de combien on avance entre deux débuts de chunk |
+| $\lceil x \rceil$ | arrondi à l'entier supérieur |
+
+**Exemple numérique 1 (simple)** : $L = 1000$, $s = 400$, $o = 100$.
+1. Pas : $s - o = 400 - 100 = 300$.
+2. Débuts des chunks : 0, 300, 600.
+3. Chunks : $[0, 400)$, $[300, 700)$, $[600, 1000)$.
+4. Formule : $n = \lceil (1000 - 100) / 300 \rceil = \lceil 3 \rceil = 3$. ✅
+5. Caractères stockés : $3 \times 400 = 1200$ pour un texte de 1 000, soit **20 % de redondance**. C'est le « prix » du chevauchement.
+
+**Exemple numérique 2 (ma vraie page)** : `01_introduction_rag.pdf` p.1, $L = 2386$, $s = 800$, $o = 150$.
+1. Pas : $800 - 150 = 650$.
+2. $n = \lceil (2386 - 150) / 650 \rceil = \lceil 2236 / 650 \rceil = \lceil 3{,}44 \rceil = 4$ chunks.
+3. Débuts : 0, 650, 1300, 1950 ; le dernier chunk $[1950, 2386)$ ne fait que 436 caractères.
+4. **Interprétation** : la page devient 4 passages d'environ 800 caractères (3 ou 4 paragraphes chacun) ; chaque frontière est doublée par 150 caractères partagés.
+
+**Stratégies de découpage**
+
+| Stratégie | Principe | ✅ Avantages | ❌ Inconvénients |
+|---|---|---|---|
+| **Taille fixe** (*fixed*) | Couper tous les $s$ caractères, avancer de $s - o$ | Très simple, taille garantie | Coupe au milieu des mots et des phrases |
+| **Par phrases** (*sentence*) | Regrouper des phrases entières jusqu'à $s$ caractères | Phrases jamais coupées, chunks lisibles | Tailles variables ; phrase géante à gérer |
+| **Par tokens** | Comme *fixed*, mais compté en tokens | Respecte exactement la limite du modèle | Nécessite le tokenizer du modèle |
+| **Sémantique** | Couper là où le sujet change (similarité des embeddings) | Chunks thématiques | Lent, complexe, coûteux |
+
+- **Mon choix** : implémenter **fixed** (référence naïve, pour comparer) et **sentence** (stratégie par défaut). Les stratégies par tokens et sémantique sont des optimisations possibles en Phase 11.
+
+**Caractères vs tokens**
+- Un **token** est l'unité lue par le modèle (un mot, un morceau de mot ou un signe).
+- Je compte en **caractères** : c'est simple et ne dépend d'aucun modèle.
+- **Estimation non mesurée** : 800 caractères ≈ 200 tokens en français. Je la **mesurerai** en Phase 4 avec le vrai tokenizer, pour vérifier que les chunks tiennent dans la limite du modèle choisi.
+
+**Un chunk ne traverse jamais deux pages**
+- Chaque page est découpée **séparément**. Un chunk appartient donc à **une seule page**, et la citation « p. 2 » reste exacte.
+- **Compromis** : une phrase qui commence en bas de page 1 et finit en haut de page 2 est séparée.
+
+**`model_validator` (Pydantic)**
+- `field_validator` vérifie **un** champ ; `model_validator(mode="after")` vérifie une règle qui porte sur **plusieurs** champs (ici `overlap < size`), une fois tous les champs lus.
+
+**`Field(gt=0)` / `Field(ge=0)`**
+- Contraintes numériques déclaratives : `gt` = *greater than* (>), `ge` = *greater or equal* (≥).
+
+### À retenir
+
+- On découpe pour 3 raisons : la limite du modèle, la précision de la recherche, la taille du prompt.
+- `size` = compromis contexte / précision ; `overlap` = filet de sécurité aux frontières (avec environ 20 % de redondance).
+- $n = \lceil (L - o)/(s - o) \rceil$ : ma page de 2 386 caractères donne 4 chunks.
+- Les paramètres sont dans la configuration, validés au démarrage, et modifiables via `.env`.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1138,13 +1270,13 @@ data/processed/*.json
 
 | Fichier | Module testé | Nb | Étape | Détail |
 |---|---|---|---|---|
-| `tests/unit/test_config.py` | `app/core/config.py` | 4 | 1.5-A | [voir](#étape-15-a--configuration-centralisée) |
+| `tests/unit/test_config.py` | `app/core/config.py` | 8 | 1.5-A, 3.1 | [voir 1.5-A](#étape-15-a--configuration-centralisée), [voir 3.1](#étape-31--principes-du-chunking-et-paramètres) |
 | `tests/unit/test_logging_config.py` | `app/core/logging_config.py` | 4 | 1.5-B | [voir](#étape-15-b--logging) |
 | `tests/unit/test_models.py` | `app/models.py` | 6 | 2.2 | [voir](#étape-22--structure-de-données-dune-page) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
 | `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
 | `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
-| **Total** | | **39** (37 unitaires + 2 d'intégration) | | |
+| **Total** | | **43** (41 unitaires + 2 d'intégration) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1160,6 +1292,7 @@ data/processed/*.json
 | 2026-10-11 | 2.4 | après la correction Ruff SIM103 | 37 passed in 0.46s |
 | 2026-10-11 | 2.5 | `python -m pytest tests -v` (1re exécution) | **2 failed**, 37 passed : PDF de test irréaliste |
 | 2026-10-11 | 2.5 | après correction du PDF de test | 39 passed in 0.49s |
+| 2026-10-11 | 3.1 | `python -m pytest tests -q` | 43 passed in 0.52s |
 
 ## Lire un résultat pytest
 
@@ -1258,6 +1391,13 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | `ensure_ascii=False` | Garde les accents lisibles dans le JSON | 2.5 |
 | `__main__` | Valeur de `__name__` quand un fichier est lancé directement | 2.5 |
 | `Path.stem` | Nom de fichier sans extension | 2.5 |
+| Chunk | Morceau de texte : unité vectorisée, stockée, retrouvée et citée | 3.1 |
+| Chunk size | Taille maximale d'un chunk (ici en caractères) | 3.1 |
+| Overlap | Caractères repris du chunk précédent | 3.1 |
+| Pas (*stride*) | `size - overlap` : avancée entre deux débuts de chunk | 3.1 |
+| Token | Unité de texte lue par un modèle (mot, sous-mot, signe) | 3.1 |
+| Troncature | Partie du texte ignorée au-delà de la limite du modèle | 3.1 |
+| `model_validator` | Validation Pydantic portant sur plusieurs champs | 3.1 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

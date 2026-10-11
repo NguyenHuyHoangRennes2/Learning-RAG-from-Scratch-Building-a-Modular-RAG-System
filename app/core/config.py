@@ -16,13 +16,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-from pydantic import field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # app/core/config.py -> parents[0] = app/core, parents[1] = app, parents[2] = racine
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
+
+# Stratégies de découpage disponibles : "fixed" (taille fixe) ou "sentence" (respecte les phrases)
+ChunkStrategy = Literal["fixed", "sentence"]
 
 
 class Settings(BaseSettings):
@@ -43,6 +46,29 @@ class Settings(BaseSettings):
     raw_data_dir: Path = PROJECT_ROOT / "data" / "raw"
     processed_data_dir: Path = PROJECT_ROOT / "data" / "processed"
     chroma_dir: Path = PROJECT_ROOT / "storage" / "chroma"
+
+    # --- Chunking (Phase 3) ---
+    # Taille maximale d'un chunk, en caractères ; gt=0 interdit 0 et les valeurs négatives
+    chunk_size: int = Field(default=800, gt=0)
+
+    # Nombre de caractères repris du chunk précédent ; ge=0 autorise 0 (pas de chevauchement)
+    chunk_overlap: int = Field(default=150, ge=0)
+
+    # Stratégie de découpage utilisée par défaut
+    chunk_strategy: ChunkStrategy = "sentence"
+
+    @model_validator(mode="after")
+    def _check_chunk_overlap(self) -> "Settings":
+        """Vérifie une règle qui porte sur DEUX champs : overlap < size."""
+        # Un chevauchement >= à la taille ferait reculer (ou piétiner) le découpage indéfiniment
+        if self.chunk_overlap >= self.chunk_size:
+            # Configuration refusée dès le démarrage (fail fast)
+            raise ValueError(
+                f"chunk_overlap ({self.chunk_overlap}) doit être < chunk_size ({self.chunk_size})"
+            )
+
+        # Configuration valide : on renvoie l'objet
+        return self
 
     @field_validator("log_level", mode="before")
     @classmethod

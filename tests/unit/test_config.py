@@ -35,3 +35,45 @@ def test_invalid_log_level_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("RAG_LOG_LEVEL", "VERBOSE")
     with pytest.raises(ValidationError):
         make_settings()
+
+
+def test_chunking_default_values() -> None:
+    # Crée la configuration sans .env ni variable d'environnement
+    settings = make_settings()
+
+    # Vérifie les valeurs par défaut du chunking
+    assert (settings.chunk_size, settings.chunk_overlap) == (800, 150)
+    assert settings.chunk_strategy == "sentence"
+
+
+def test_overlap_greater_or_equal_to_size_is_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Chevauchement égal à la taille : le découpage n'avancerait jamais
+    monkeypatch.setenv("RAG_CHUNK_SIZE", "100")
+    monkeypatch.setenv("RAG_CHUNK_OVERLAP", "100")
+
+    # La configuration doit être refusée, avec un message qui cite chunk_overlap
+    with pytest.raises(ValidationError, match="chunk_overlap"):
+        # Tentative de création invalide
+        make_settings()
+
+
+def test_non_positive_chunk_size_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Une taille de 0 caractère n'a pas de sens
+    monkeypatch.setenv("RAG_CHUNK_SIZE", "0")
+
+    # Field(gt=0) doit refuser la valeur
+    with pytest.raises(ValidationError):
+        # Tentative de création invalide
+        make_settings()
+
+
+def test_unknown_chunk_strategy_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # "semantic" ne fait pas partie des stratégies autorisées (Literal)
+    monkeypatch.setenv("RAG_CHUNK_STRATEGY", "semantic")
+
+    # La configuration doit être refusée
+    with pytest.raises(ValidationError):
+        # Tentative de création invalide
+        make_settings()

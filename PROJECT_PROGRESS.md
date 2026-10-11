@@ -1,8 +1,20 @@
 # PROJECT_PROGRESS.md — Suivi du projet RAG
 
+Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
+
 ## Phase en cours
 
-**Phase 2 — Ingestion**
+**Phase 3 — Chunking**
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 3.1 | Principes du chunking + paramètres dans la configuration | 🔎 Implémentée, en attente de validation |
+| 3.2 | Structure de données `Chunk` (`app/models.py`) | ⬜ À faire |
+| 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | ⬜ À faire |
+| 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | ⬜ À faire |
+| 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) | ⬜ À faire |
+
+## Phase 2 — Ingestion
 
 | Étape | Titre | Statut |
 |---|---|---|
@@ -13,8 +25,6 @@
 | 2.5 | Validation sur les vrais PDF (test d'intégration + export `data/processed/`) | ✅ Validée (2026-10-11) |
 
 **Phase 2 terminée le 2026-10-11.**
-
-Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
 
 ## Phase 1 — Initialisation
 
@@ -58,6 +68,9 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_text_cleaner.py` | 2.4 | 14 tests : Unicode, recollage des lignes, titres, en-têtes répétés, pipeline complet |
 | `scripts/ingest_preview.py` | 2.5 | Point d'entrée : PDF → pages nettoyées → un JSON par document dans `data/processed/` (`export_pages`) |
 | `tests/integration/test_ingestion_pipeline.py` | 2.5 | 2 tests d'intégration : chargeur + nettoyage, puis export JSON, sur un PDF réaliste généré |
+| `app/core/config.py` (modifié) | 3.1 | + `chunk_size=800`, `chunk_overlap=150`, `chunk_strategy="sentence"`, validateur `overlap < size` |
+| `.env.example` (modifié) | 3.1 | + variables `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_CHUNK_STRATEGY` |
+| `tests/unit/test_config.py` (modifié) | 3.1 | + 4 tests sur les paramètres de chunking (8 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -83,6 +96,9 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - un saut de ligne est gardé après `. ! ? : »` ou autour d'un titre numéroté court ; sinon les lignes sont recollées ;
   - normalisation NFKC et apostrophes `’` → `'`.
   Pas de recollage des césures (`mot-\nsuite`), pour ne pas abîmer les mots composés ; nos PDF n'en contiennent pas.
+- **Chunking — unité = caractères** : simple et sans dépendance. Le lien avec la limite en **tokens** du modèle d'embeddings sera **mesuré** en Phase 4 (estimation actuelle, non mesurée : 800 caractères ≈ 200 tokens).
+- **Chunking — valeurs par défaut** : `chunk_size=800`, `chunk_overlap=150` (environ 19 %), `chunk_strategy="sentence"`. Un chunk ne traverse jamais deux pages, pour que la citation de page reste exacte.
+- **Deux stratégies** implémentées pour pouvoir les **comparer** : « fixed » (référence naïve) et « sentence » (par défaut).
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -186,6 +202,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - Après correction : `python -m pytest tests -q` → **39 passed** (37 unitaires + 2 d'intégration) en 0.49s ; `ruff check` : OK
 - `python -m scripts.ingest_preview` sur les vrais PDF : 3 JSON écrits dans `data/processed/` (2 pages chacun), accents lisibles ; `git check-ignore` confirme qu'ils sont ignorés
 
+Étape 3.1, vérifiée le 2026-10-11 :
+
+- Mesures sur les pages nettoyées : pages de 536 à 2 454 caractères ; paragraphes de 357 caractères au maximum ; environ 9 000 caractères au total
+- `python -m pytest tests -q` : **43 passed** (39 + 4 nouveaux) ; `ruff check` : OK
+- `get_settings()` → `800 150 sentence`
+
 ## Données de travail
 
 - `data/raw/` contient 3 PDF en **français** : `01_introduction_rag.pdf`, `02_embeddings_recherche_vectorielle.pdf`, `03_evaluation_rag.pdf`. Il faudra donc un modèle d'embeddings multilingue en Phase 4.
@@ -200,4 +222,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-Validation de 2.5 (fin de la Phase 2), puis **Phase 3 — Chunking**.
+3.2 — Structure de données `Chunk` (après validation de 3.1).
