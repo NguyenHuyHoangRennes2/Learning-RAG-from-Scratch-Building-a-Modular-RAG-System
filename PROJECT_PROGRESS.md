@@ -12,7 +12,11 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | 3.2 | Structure de données `Chunk` (`app/models.py`) | ✅ Validée (2026-10-15) |
 | 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | ✅ Validée (2026-10-15) |
 | 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | ✅ Validée (2026-10-15) |
-| 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) | 🔎 En cours |
+| 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) + correction des titres orphelins | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 3 terminée le 2026-10-15.**
+
+> **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
 ## Phase 2 — Ingestion
 
@@ -77,6 +81,10 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_chunker.py` | 3.3 | 13 tests (dont 4 cas paramétrés de paramètres invalides) |
 | `app/ingestion/chunker.py` (modifié) | 3.4 | + `split_sentences`, `split_text_sentence`, `_overlap_tail`, `_joined_length` ; table `SPLITTERS` ; `chunk_page_fixed` remplacé par `chunk_page(..., strategy)` ; + `chunk_pages` |
 | `tests/unit/test_chunker.py` (modifié) | 3.4 | 25 tests : anciens tests adaptés à `chunk_page(strategy="fixed")`, + 12 nouveaux |
+| `scripts/compare_chunking.py` | 3.5 | Point d'entrée : compare « fixed » et « sentence » (`ChunkingStats`, `compute_stats`, options `--size` et `--overlap`) |
+| `tests/integration/test_chunking_pipeline.py` | 3.5 | 4 tests d'intégration : PDF → chargeur → nettoyage → chunks → statistiques |
+| `app/ingestion/chunker.py`, `text_cleaner.py` (modifiés) | 3.5 | + `attach_headings()` ; `_is_heading` → `is_heading` (publique) |
+| `tests/unit/test_chunker.py` (modifié) | 3.5 | + 4 tests sur les titres (29 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -250,6 +258,35 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - `python -m pytest tests/unit/test_chunker.py -v` : 25 passed ; `python -m pytest tests -q` : **74 passed**
 - Sur les vrais PDF (800 / 150, « sentence ») : **15 chunks**, comme avec « fixed ». Tailles : 382 à 794 caractères ; les grandes pages font 24 à 27 phrases. La phrase la plus longue fait 221 caractères, donc le repli sur « fixed » n'est jamais utilisé sur ce corpus.
 - Toutes les frontières tombent en fin de phrase : c0 finit par `"...prépare les documents."` et c1 commence par `"2. Les deux pipelines fondamentaux Le pipeline d'ingestion..."` (chevauchement = titre + 1 phrase).
+- Commit `9af6bde`
+
+Étape 3.5, vérifiée le 2026-10-15 :
+
+- `ruff check` : All checks passed ; `python -m pytest tests/integration -v` : 6 passed (4 nouveaux) ; `python -m pytest tests -q` : **78 passed**
+- `python -m scripts.compare_chunking` (mesures réelles, 6 pages) :
+
+  | Mesure | fixed 800/150 | sentence 800/150 | fixed 400/50 | sentence 400/50 |
+  |---|---|---|---|---|
+  | Nombre de chunks | 15 | 15 | 28 | 28 |
+  | Taille min / moy. / max | 365 / 692 / 800 | 382 / 663 / 794 | 94 / 362 / 400 | 93 / 327 / 399 |
+  | Redondance (stocké/texte) | 1.15 | 1.10 | 1.12 | 1.01 |
+  | Débuts propres | 40 % | 100 % | 21 % | 100 % |
+  | Fins propres | 40 % | 93 % | 21 % | 86 % |
+
+- Fins non propres de « sentence » : **toutes** sont des **titres orphelins**. Un titre numéroté termine le chunk et son contenu part dans le chunk suivant (ex. `8a9457a4c9ec61c1-p1-c2` finit par `"...reconnaître cette limite. 5. Protocole de comparaison"`). Il y en a 1 sur 15 à 800/150 et 4 sur 28 à 400/50.
+- Avec 400/50, le chevauchement de « sentence » est presque nul (redondance 1.01) : la plupart des phrases font plus de 50 caractères, donc aucune phrase entière ne tient dans le chevauchement.
+- Ces mesures portent sur la **forme** des chunks. L'effet sur la **qualité de la recherche** n'est pas encore mesuré ; il le sera en Phase 6 et en Phase 11.
+- **Correction des titres orphelins (option A, choisie le 2026-10-15)** : la nouvelle fonction `attach_headings()` colle chaque titre numéroté à la phrase qui le suit. `_is_heading` de `text_cleaner` devient publique (`is_heading`), pour que la règle soit la même partout. 4 tests unitaires ont été ajoutés.
+- Mesures **après** correction (`python -m scripts.compare_chunking`) :
+
+  | Mesure | sentence 800/150 avant → après | sentence 400/50 avant → après |
+  |---|---|---|
+  | Nombre de chunks | 15 → **14** | 28 → 28 |
+  | Redondance | 1.10 → **1.05** | 1.01 → 1.00 |
+  | Débuts propres | 100 % → 100 % | 100 % → 100 % |
+  | Fins propres | 93 % → **100 %** | 86 % → **100 %** |
+
+- `python -m pytest tests -q` : **82 passed** ; `ruff check` : OK
 
 ## Données de travail
 
@@ -258,6 +295,7 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Problèmes connus / décisions en attente
 
+- ~~**Titres orphelins**~~ (mesuré en 3.5) : **corrigé** par `attach_headings()`. Il y a maintenant 100 % de fins propres.
 - **Limite de `remove_repeated_lines`** : une ligne identique (chiffres masqués) dans les 3 premières ou 3 dernières lignes de **toutes** les pages est retirée, même si c'est du contenu. Risque surtout pour les documents aux pages très courtes et très similaires. Pas de souci sur le corpus actuel.
 - Avec PyMuPDF, utiliser `import pymupdf` : l'ancien nom `import fitz` affiche un avertissement de dépréciation.
 - Seules les dépendances directes sont figées ; les dépendances transitives ne le sont pas. Un fichier de verrouillage complet (`pip freeze`) pourra être ajouté en Phase 12 (Docker).
@@ -265,4 +303,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-3.5 — Comparaison des stratégies sur les vrais PDF (après validation de 3.4).
+Décision sur les titres orphelins (corriger maintenant ou plus tard), puis validation de 3.5 → fin de la Phase 3 → Phase 4 (embeddings).

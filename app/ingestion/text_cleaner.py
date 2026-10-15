@@ -56,8 +56,11 @@ def normalize_unicode(text: str) -> str:
     return text.translate(APOSTROPHES)
 
 
-def _is_heading(line: str) -> bool:
-    """Indique si une ligne ressemble à un titre de section numéroté."""
+def is_heading(line: str) -> bool:
+    """Indique si une ligne ressemble à un titre de section numéroté.
+
+    Fonction publique (sans ``_``) : elle est aussi utilisée par le chunker (étape 3.5).
+    """
     # Un titre est court ET commence par une numérotation suivie d'une majuscule
     return len(line) <= MAX_HEADING_LENGTH and bool(HEADING_PATTERN.match(line))
 
@@ -71,7 +74,7 @@ def _is_paragraph_break(previous: str, current: str) -> bool:
 
     # Un titre reste seul sur sa ligne : saut gardé si l'une des deux lignes est un titre.
     # Sinon (False), c'est un simple retour à la ligne de mise en page : les lignes seront recollées
-    return _is_heading(previous) or _is_heading(current)
+    return is_heading(previous) or is_heading(current)
 
 
 def join_wrapped_lines(text: str) -> str:

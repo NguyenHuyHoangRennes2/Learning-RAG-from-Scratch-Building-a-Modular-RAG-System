@@ -23,6 +23,9 @@ from collections.abc import Callable
 # Le type des stratégies autorisées ("fixed" ou "sentence"), défini une seule fois dans la config
 from app.core.config import ChunkStrategy
 
+# Détection des titres numérotés (même règle que pour le nettoyage, étape 2.4)
+from app.ingestion.text_cleaner import is_heading
+
 # Les structures de données manipulées : des pages en entrée, des chunks en sortie
 from app.models import Chunk, DocumentPage
 
@@ -135,6 +138,44 @@ def split_sentences(text: str) -> list[str]:
     return sentences
 
 
+def attach_headings(sentences: list[str]) -> list[str]:
+    """Colle chaque titre numéroté à la phrase qui le suit (évite les titres orphelins).
+
+    Exemple : ["1. Titre", "Phrase un.", "Phrase deux."] → ["1. Titre Phrase un.", "Phrase deux."]
+    Sans cela, un titre pouvait terminer un chunk alors que son contenu était dans le suivant
+    (mesuré à l'étape 3.5 : 1 chunk sur 15 avec 800/150).
+    """
+    # Phrases après regroupement
+    units: list[str] = []
+
+    # Titre(s) en attente de la phrase qui suit
+    pending_headings: list[str] = []
+
+    # Parcourt les phrases dans l'ordre
+    for sentence in sentences:
+        # Un titre est mis de côté : il sera collé à la prochaine phrase
+        if is_heading(sentence):
+            # Plusieurs titres consécutifs ("1. Partie" puis "1.1. Section") restent ensemble
+            pending_headings.append(sentence)
+
+            # Passe à la phrase suivante
+            continue
+
+        # Phrase normale : on lui colle les titres en attente (s'il y en a)
+        units.append(SENTENCE_SEPARATOR.join([*pending_headings, sentence]))
+
+        # Les titres sont consommés
+        pending_headings = []
+
+    # Titre(s) en toute fin de texte, sans phrase après : on les garde quand même
+    if pending_headings:
+        # Rien n'est perdu
+        units.append(SENTENCE_SEPARATOR.join(pending_headings))
+
+    # Renvoie les unités dans l'ordre du texte
+    return units
+
+
 def _joined_length(sentences: list[str]) -> int:
     """Longueur du texte obtenu en recollant les phrases avec SENTENCE_SEPARATOR."""
     # Aucune phrase : texte vide
@@ -188,8 +229,8 @@ def split_text_sentence(text: str, chunk_size: int, chunk_overlap: int) -> list[
     # Phrases du morceau en cours de construction
     current: list[str] = []
 
-    # Parcourt les phrases dans l'ordre du texte
-    for sentence in split_sentences(text):
+    # Parcourt les phrases dans l'ordre du texte (chaque titre est collé à la phrase suivante)
+    for sentence in attach_headings(split_sentences(text)):
         # Cas rare : une phrase seule dépasse déjà la taille maximale
         if len(sentence) > chunk_size:
             # On termine d'abord le morceau en cours, s'il contient quelque chose

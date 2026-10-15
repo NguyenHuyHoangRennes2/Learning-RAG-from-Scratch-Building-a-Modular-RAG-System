@@ -24,6 +24,7 @@
   - [3.2 — Structure de données Chunk](#étape-32--structure-de-données-chunk)
   - [3.3 — Chunker « fixed »](#étape-33--chunker-stratégie-fixed)
   - [3.4 — Chunker « sentence »](#étape-34--chunker-stratégie-sentence)
+  - [3.5 — Comparaison des stratégies](#étape-35--comparaison-des-stratégies)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1527,6 +1528,114 @@ python -m pytest tests/unit/test_chunker.py -v
 
 ---
 
+## Étape 3.5 — Comparaison des stratégies
+
+> Statut : terminée le 2026-10-15 (mode autonome). **Fin de la Phase 3** 🎉
+
+### Ce que j'ai fait
+
+- Créé `scripts/compare_chunking.py` : il découpe mes PDF avec les deux stratégies et affiche un tableau de **mesures**. Les options `--size` et `--overlap` permettent d'essayer d'autres réglages.
+- Créé `tests/integration/test_chunking_pipeline.py` (4 tests) : PDF réaliste → chargeur → nettoyage → chunks → statistiques.
+- Lancé :
+  ```powershell
+  python -m scripts.compare_chunking
+  python -m scripts.compare_chunking --size 400 --overlap 50
+  ```
+- **Résultats réels :**
+
+  | Mesure | fixed 800/150 | sentence 800/150 | fixed 400/50 | sentence 400/50 |
+  |---|---|---|---|---|
+  | Nombre de chunks | 15 | 15 | 28 | 28 |
+  | Taille min / moy. / max | 365 / 692 / 800 | 382 / 663 / 794 | 94 / 362 / 400 | 93 / 327 / 399 |
+  | Redondance (stocké/texte) | 1.15 | 1.10 | 1.12 | 1.01 |
+  | Débuts propres | 40 % | **100 %** | 21 % | **100 %** |
+  | Fins propres | 40 % | **93 %** | 21 % | **86 %** |
+
+- **Ce que j'en conclus :**
+  1. « sentence » a des bords nettement plus propres, pour le **même nombre** de chunks.
+  2. Pourquoi « sentence » n'atteint pas 100 % de fins propres : en cherchant les chunks fautifs, j'ai trouvé des **titres orphelins**. Par exemple, `...reconnaître cette limite. 5. Protocole de comparaison` : le titre termine le chunk, et son contenu est dans le suivant. **La mesure a révélé un défaut** que je n'avais pas vu en lisant les exemples.
+  3. Avec 400/50, le chevauchement de « sentence » ne sert presque à rien (redondance 1.01) : mes phrases font presque toutes plus de 50 caractères.
+
+### Tests (pytest)
+
+**Fichier** : `tests/integration/test_chunking_pipeline.py` · **Modules testés** : `pdf_loader` + `text_cleaner` + `chunker` + `compare_chunking`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_chunks_are_valid_and_traceable` (×2) | Pour les deux stratégies : plusieurs chunks, taille ≤ 200, ids uniques, bon document et bonnes pages, en-tête retiré | Toute la chaîne fonctionne ensemble |
+| `test_sentence_strategy_keeps_every_sentence_whole` | Chaque phrase de chaque page apparaît **entière** dans un chunk de sa page | Aucune phrase perdue ni coupée |
+| `test_sentence_strategy_has_cleaner_boundaries_than_fixed` | « sentence » : 100 % de débuts et de fins propres ; « fixed » : < 100 % de fins propres | La comparaison est vérifiée automatiquement |
+
+**Techniques utilisées :**
+- **Fixture `pages`** : elle fabrique le PDF et renvoie les pages nettoyées. Chaque test la reçoit en paramètre, sans répéter la préparation.
+- **Petits paramètres (200 / 50)** : ils donnent plusieurs chunks par page avec un texte court. Le test reste rapide et lisible.
+- **Message d'assertion** : `assert ..., sentence` affiche la phrase fautive si le test échoue.
+
+**Lancer ces tests :**
+```powershell
+python -m pytest tests/integration -v
+```
+
+**Résultat réel (2026-10-15)** : 6 passed dans `tests/integration` (78 au total)
+
+### Notions apprises
+
+**Mesurer plutôt que supposer**
+- Avant 3.5, je *pensais* que « sentence » était meilleure. Maintenant je l'ai **mesuré** : 100 % contre 40 % de débuts propres.
+- La mesure a aussi révélé un défaut inattendu (les titres orphelins). C'est la règle de CLAUDE.md : *ne pas présenter une amélioration non mesurée comme un résultat prouvé*.
+
+**Métriques de forme vs métriques de qualité**
+- Ce que j'ai mesuré, c'est la **forme** des chunks : taille, redondance, propreté des bords.
+- La **qualité de la recherche** (le bon chunk est-il retrouvé pour une question ?) se mesurera avec Precision@K, Recall@K et MRR, en Phases 6 et 11.
+- Des bords propres devraient améliorer la recherche, mais ce n'est **pas encore prouvé**.
+
+**Redondance**
+- **Formule** : $r = \dfrac{\sum_i |c_i|}{\sum_p |p|}$, avec $|c_i|$ la longueur du chunk $i$ et $|p|$ celle de la page $p$.
+- **Exemple** : « fixed » 800/150 → $r = 1{,}15$. On stocke 15 % de caractères en plus que le texte d'origine, à cause du chevauchement.
+- **Interprétation** : $r = 1$ signifie aucune répétition. Plus $r$ est grand, plus l'index est gros et plus les mêmes passages risquent de revenir plusieurs fois dans les résultats.
+
+**Titre orphelin**
+- **Définition** : un titre qui se retrouve à la **fin** d'un chunk, séparé du contenu qu'il annonce.
+- **Problème** : le titre est l'information la plus résumée de la section, mais il est rattaché au mauvais passage.
+- **Correction possible** : rattacher chaque titre à la phrase qui le suit, pour qu'ils restent dans le même chunk.
+
+**`argparse`**
+- Module standard qui lit les options de la ligne de commande (`--size 400`), avec une aide automatique (`--help`).
+- Les valeurs par défaut viennent de `get_settings()` : la configuration reste la source unique.
+
+### Correction des titres orphelins (option A)
+
+- **Code** : nouvelle fonction `attach_headings(sentences)` dans `chunker.py`. Elle met chaque titre « en attente » et le colle à la phrase suivante. Plusieurs titres consécutifs restent ensemble, et un titre en fin de texte est gardé seul.
+- **Réutilisation** : `_is_heading` de `text_cleaner.py` devient `is_heading` (publique). Le nettoyage et le chunking appliquent ainsi **la même règle** pour reconnaître un titre (DRY).
+- **Tests ajoutés** (`tests/unit/test_chunker.py`, 29 au total) :
+
+  | Test | Ce qu'il vérifie |
+  |---|---|
+  | `test_heading_is_attached_to_the_next_sentence` | `["1. Définition", "Le RAG cherche.", ...]` → `"1. Définition Le RAG cherche."` |
+  | `test_consecutive_headings_stay_together` | `1. Partie` + `1.1. Section` + texte → une seule unité |
+  | `test_trailing_heading_is_kept` | Un titre final n'est pas perdu |
+  | `test_heading_never_ends_a_chunk` | Reproduit le défaut mesuré : le titre ouvre le chunk suivant au lieu de fermer le précédent |
+
+- **Mesure après correction** (même commande) :
+
+  | Mesure | sentence 800/150 avant → après | sentence 400/50 avant → après |
+  |---|---|---|
+  | Nombre de chunks | 15 → **14** | 28 → 28 |
+  | Redondance | 1.10 → **1.05** | 1.01 → 1.00 |
+  | Fins propres | 93 % → **100 %** | 86 % → **100 %** |
+
+- `python -m pytest tests -q` → **82 passed**.
+- **Leçon** : mesurer → trouver la cause → corriger → **remesurer**. Sans la deuxième mesure, je ne pourrais pas affirmer que la correction marche.
+
+### À retenir
+
+- « sentence », après correction : 14 chunks, 100 % de débuts **et** de fins propres (contre 40 % pour « fixed »).
+- Les fins non propres sont des **titres orphelins**, découverts grâce à la mesure.
+- Un chevauchement trop petit par rapport à la longueur des phrases ne sert à rien avec « sentence ».
+- Forme des chunks ≠ qualité de la recherche : la seconde se mesurera plus tard.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1567,9 +1676,10 @@ python -m pytest tests/unit/test_chunker.py -v
 | `tests/unit/test_models.py` | `app/models.py` | 12 | 2.2, 3.2 | [voir 2.2](#étape-22--structure-de-données-dune-page), [voir 3.2](#étape-32--structure-de-données-chunk) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
 | `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
-| `tests/unit/test_chunker.py` | `app/ingestion/chunker.py` | 25 | 3.3, 3.4 | [voir 3.3](#étape-33--chunker-stratégie-fixed), [voir 3.4](#étape-34--chunker-stratégie-sentence) |
+| `tests/unit/test_chunker.py` | `app/ingestion/chunker.py` | 29 | 3.3, 3.4, 3.5 | [voir 3.3](#étape-33--chunker-stratégie-fixed), [voir 3.4](#étape-34--chunker-stratégie-sentence) |
 | `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
-| **Total** | | **74** (72 unitaires + 2 d'intégration) | | |
+| `tests/integration/test_chunking_pipeline.py` | `pdf_loader` + `text_cleaner` + `chunker` + `compare_chunking` | 4 | 3.5 | [voir](#étape-35--comparaison-des-stratégies) |
+| **Total** | | **82** (76 unitaires + 6 d'intégration) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1589,6 +1699,8 @@ python -m pytest tests/unit/test_chunker.py -v
 | 2026-10-12 | 3.2 | `python -m pytest tests -q` | 49 passed in 0.50s |
 | 2026-10-15 | 3.3 | `python -m pytest tests -q` (après correction RUF007) | 62 passed in 0.52s |
 | 2026-10-15 | 3.4 | `python -m pytest tests -q` | 74 passed in 0.51s |
+| 2026-10-15 | 3.5 | `python -m pytest tests -q` | 78 passed in 0.63s |
+| 2026-10-15 | 3.5 | après correction des titres orphelins | 82 passed in 0.63s |
 
 ## Lire un résultat pytest
 
@@ -1713,6 +1825,9 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Algorithme glouton | Prend la meilleure décision locale sans revenir en arrière | 3.4 |
 | Fallback (repli) | Solution de secours quand la méthode principale ne s'applique pas | 3.4 |
 | `Callable` | Type « fonction » (paramètres → retour) | 3.4 |
+| Redondance | Caractères stockés / caractères du texte d'origine | 3.5 |
+| Titre orphelin | Titre placé en fin de chunk, séparé de son contenu | 3.5 |
+| `argparse` | Module standard de lecture des options de ligne de commande | 3.5 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

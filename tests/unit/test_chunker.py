@@ -11,6 +11,7 @@ from app.core.config import ChunkStrategy
 
 # Les fonctions que l'on teste
 from app.ingestion.chunker import (
+    attach_headings,
     chunk_page,
     chunk_pages,
     split_sentences,
@@ -142,6 +143,45 @@ def test_numbers_and_lowercase_do_not_end_a_sentence() -> None:
 
     # Aucune de ces coupures n'est une vraie fin de phrase : un seul élément
     assert split_sentences(text) == [text]
+
+
+# --- attach_headings ---
+
+
+def test_heading_is_attached_to_the_next_sentence() -> None:
+    # Un titre suivi de deux phrases
+    units = attach_headings(["1. Définition", "Le RAG cherche.", "Il cite."])
+
+    # Le titre est collé à la PREMIÈRE phrase qui le suit ; la seconde reste seule
+    assert units == ["1. Définition Le RAG cherche.", "Il cite."]
+
+
+def test_consecutive_headings_stay_together() -> None:
+    # Un titre de partie, un titre de section, puis une phrase
+    units = attach_headings(["1. Partie", "1.1. Section", "Texte."])
+
+    # Les deux titres sont collés à la phrase
+    assert units == ["1. Partie 1.1. Section Texte."]
+
+
+def test_trailing_heading_is_kept() -> None:
+    # Un titre en toute fin de texte, sans phrase après
+    units = attach_headings(["Texte.", "2. Suite"])
+
+    # Il n'est pas perdu : il forme une unité à lui seul
+    assert units == ["Texte.", "2. Suite"]
+
+
+def test_heading_never_ends_a_chunk() -> None:
+    # Une phrase, un titre, puis la phrase qui suit le titre (cas réel mesuré en 3.5)
+    a, b = sentence("A", 60), sentence("B", 60)
+    text = f"{a}\n2. Titre\n{b}"
+
+    # size=80 : A (60) + titre (8) tiendrait, mais le titre doit partir avec B
+    pieces = split_text_sentence(text, chunk_size=80, chunk_overlap=0)
+
+    # Le titre ouvre le second chunk au lieu de fermer le premier
+    assert pieces == [a, f"2. Titre {b}"]
 
 
 # --- split_text_sentence ---
