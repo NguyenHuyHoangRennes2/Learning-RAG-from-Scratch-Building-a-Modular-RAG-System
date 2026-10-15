@@ -1,4 +1,4 @@
-"""Client du LLM local Ollama, via son API REST (http://localhost:11434).
+"""Client du LLM local Ollama, via son API REST (http://127.0.0.1:11434).
 
 On appelle l'API HTTP « à la main » avec httpx (et non avec le paquet ``ollama``) :
 chaque requête est visible et explicite, ce qui est plus pédagogique.
@@ -21,6 +21,9 @@ import httpx
 
 # Logger nommé d'après le module : "app.generation.llm"
 logger = logging.getLogger(__name__)
+
+# Délai maximal pour ÉTABLIR la connexion avec Ollama (serveur local : quelques ms suffisent)
+CONNECT_TIMEOUT_SECONDS = 1.0
 
 
 class LLMError(RuntimeError):
@@ -61,9 +64,14 @@ class OllamaClient:
         # Options de génération transmises à Ollama
         self.options = {"temperature": temperature, "num_ctx": num_ctx}
 
+        # Délais : la GÉNÉRATION peut être longue, mais la CONNEXION à un serveur local
+        # doit être quasi instantanée. Sans connect=1.0, un Ollama absent coûtait ~4 s
+        # par requête sous Windows (mesuré en Phase 9).
+        timeout = httpx.Timeout(timeout_seconds, connect=CONNECT_TIMEOUT_SECONDS)
+
         # Client HTTP réutilisé pour tous les appels (connexions gardées ouvertes)
         self._http = http_client or httpx.Client(
-            base_url=self.base_url, timeout=timeout_seconds
+            base_url=self.base_url, timeout=timeout
         )
 
     def generate(self, system_prompt: str, user_prompt: str) -> str:
@@ -86,7 +94,8 @@ class OllamaClient:
         try:
             # Appel HTTP à l'API de chat d'Ollama
             response = self._http.post("/api/chat", json=payload)
-        except httpx.ConnectError as error:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            # ConnectTimeout est testé AVANT TimeoutException (dont il hérite) : c'est une absence de serveur
             # Serveur absent : message qui dit QUOI faire
             raise LLMUnavailableError(
                 f"Ollama est injoignable à {self.base_url}. "

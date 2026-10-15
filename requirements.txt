@@ -16,3 +16,11 @@ pydantic-settings==2.15.0
 
 # --- Client HTTP pour appeler l'API locale d'Ollama ---
 httpx==0.28.1
+
+# --- API REST (Phase 9, ajoutées le 2026-10-15) ---
+# Framework web : routes, validation Pydantic, documentation OpenAPI automatique
+fastapi==0.143.1
+# Serveur ASGI qui exécute l'application FastAPI (déjà tiré par chromadb, déclaré car on l'utilise)
+uvicorn==0.54.0
+# Lecture des formulaires multipart : indispensable pour l'envoi de fichiers PDF (UploadFile)
+python-multipart==0.0.32

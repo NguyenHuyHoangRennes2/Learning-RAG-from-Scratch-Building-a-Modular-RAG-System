@@ -68,6 +68,17 @@ def test_unreachable_server_raises_a_helpful_error() -> None:
         make_client(handler).generate("s", "u")
 
 
+def test_connection_timeout_means_server_unavailable() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Simule une connexion qui ne s'établit pas dans le délai (serveur absent)
+        raise httpx.ConnectTimeout("connexion trop lente", request=request)
+
+    # Ce n'est PAS une génération trop lente : c'est un serveur indisponible
+    with pytest.raises(LLMUnavailableError, match="injoignable"):
+        # Appel qui échoue
+        make_client(handler).generate("s", "u")
+
+
 def test_missing_model_suggests_ollama_pull() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         # Ollama répond 404 quand le modèle n'est pas téléchargé

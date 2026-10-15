@@ -11,33 +11,15 @@ import pytest
 
 # Les composants assemblés
 from app.core.config import Settings
-from app.embeddings.embedding_model import EmbeddingModel
 from app.generation.prompts import NO_ANSWER_MESSAGE, SYSTEM_PROMPT
-from app.rag.pipeline import (
-    IngestionPipeline,
-    QuestionAnsweringPipeline,
-    RAGPipeline,
-    build_pipeline,
-)
-from app.retrieval.retriever import Retriever
-from app.vectorstore.chroma_store import ChromaStore
-from tests.fakes import FakeLLM, KeywordEncoder
+from app.rag.pipeline import RAGPipeline, build_pipeline
+from tests.fakes import FakeLLM, make_fake_pipeline
 
 
 def make_pipeline(tmp_path: Path, llm: FakeLLM) -> RAGPipeline:
     """Pipeline complet avec faux modèle d'embeddings, vraie ChromaDB et faux LLM."""
-    # UN SEUL modèle partagé par l'ingestion et la recherche
-    embedder = EmbeddingModel("fake-keywords", encoder=KeywordEncoder())
-
-    # Vraie base vectorielle temporaire
-    store = ChromaStore(tmp_path / "chroma", "test_chunks", "fake-keywords")
-
-    # Assemble les deux sous-pipelines
-    return RAGPipeline(
-        ingestion=IngestionPipeline(embedder, store, 200, 40, "sentence"),
-        qa=QuestionAnsweringPipeline(Retriever(embedder, store, top_k=2), llm),
-        raw_data_dir=tmp_path / "raw",
-    )
+    # Constructeur partagé avec les tests de l'API (tests/fakes.py)
+    return make_fake_pipeline(tmp_path, llm)
 
 
 def index_demo_pdf(pipeline: RAGPipeline) -> None:

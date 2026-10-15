@@ -71,8 +71,9 @@ def load_pdf(pdf_path: Path) -> list[DocumentPage]:
 
     # Essaie d'ouvrir le PDF ; un fichier corrompu ou qui n'est pas un PDF lève FileDataError
     try:
-        # Ouvre le document PDF
-        doc = pymupdf.open(pdf_path)
+        # Ouvre le PDF depuis la MÉMOIRE (stream) et non depuis le disque : sous Windows,
+        # un échec d'ouverture laissait le fichier verrouillé (WinError 32, trouvé en Phase 9)
+        doc = pymupdf.open(stream=pdf_path.read_bytes(), filetype="pdf")
 
     # Le fichier existe mais son contenu n'est pas un PDF valide
     except pymupdf.FileDataError as error:

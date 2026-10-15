@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 9 — API REST (FastAPI)
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 9.1 | Dépendances (`fastapi`, `uvicorn`, `python-multipart`) et schémas Pydantic (`app/api/schemas.py`) | ✅ Terminée (2026-10-15, mode autonome) |
+| 9.2 | Routes (`app/api/routes.py`) et application (`app/main.py`) | ✅ Terminée (2026-10-15, mode autonome) |
+| 9.3 | Tests `TestClient` + essais avec le vrai serveur uvicorn ; 3 corrections issues des mesures | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 9 terminée le 2026-10-15.**
+
 ## Phase 8 — Pipeline RAG complet
 
 | Étape | Titre | Statut |
@@ -171,6 +181,15 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/integration/test_rag_pipeline.py` | 8.2 | 7 tests de bout en bout (faux LLM) |
 | `scripts/ask.py` | 8.3 | CLI : question → réponse + sources + latences ; sans Ollama, affiche les passages retrouvés |
 | `scripts/build_index.py` (modifié) | 8.3 | Utilise `build_pipeline` |
+| `requirements.txt` (modifié) | 9.1 | + `fastapi==0.143.1`, `uvicorn==0.54.0`, `python-multipart==0.0.32` |
+| `app/core/config.py`, `.env.example` (modifiés) | 9.1 | + `max_upload_mb=20` ; URL Ollama par défaut → `http://127.0.0.1:11434` |
+| `app/api/schemas.py` | 9.1 | `AskRequest`, `AskResponse` (+`SourceOut`), `IngestResponse`, `DocumentOut`, `DeleteResponse`, `HealthResponse` |
+| `app/api/routes.py` | 9.2 | `GET /health`, `POST /ask`, `GET /documents`, `POST /documents`, `DELETE /documents/{id}` ; dépendances `PipelineDep`, `SettingsDep` |
+| `app/main.py` | 9.2 | `create_app(settings, pipeline)` avec cycle de vie (logging, pipeline, préchauffage du modèle) ; `app` pour uvicorn |
+| `tests/fakes.py` (modifié) | 9.3 | + `make_fake_pipeline`, `pdf_bytes` |
+| `tests/integration/test_api.py` | 9.3 | 16 tests (santé, envoi, doublon, 4 envois invalides, conflit de nom, traversée de chemin, question, 3 questions invalides, 503/502, suppression, OpenAPI) |
+| `app/ingestion/pdf_loader.py` (modifié) | 9.3 | PDF ouvert depuis la mémoire (`stream=`) : plus de fichier verrouillé sous Windows |
+| `app/generation/llm.py` (modifié) | 9.3 | Délai de connexion de 1 s (`CONNECT_TIMEOUT_SECONDS`) ; `ConnectTimeout` → `LLMUnavailableError` ; + 1 test (6 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -246,6 +265,14 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - **Index vide ou aucune source** : abstention **sans appeler le LLM**. Un LLM sans contexte répondrait de mémoire, ce qui est exactement ce qu'on veut éviter.
   - Les erreurs LLM (`LLMError`) **remontent** à l'appelant : l'API les traduira en HTTP 503, et la CLI affiche alors les passages.
 - **Façade `RAGPipeline`** : un seul objet pour l'API et l'interface. **`build_pipeline`** est le seul endroit qui lit la configuration pour assembler les composants, et il crée **un seul** `EmbeddingModel` partagé par l'ingestion et la recherche (règle d'or vérifiée par un test).
+- **API** (Phase 9) :
+  - Pydantic **seulement à la frontière** (schémas d'API), et dataclasses à l'intérieur (décision de 2.2) ;
+  - les routes ne contiennent aucune logique RAG : validation → `RAGPipeline` → conversion ;
+  - codes HTTP : 422 (question invalide, PDF illisible), 415 (pas un PDF : extension **et** signature `%PDF-` vérifiées), 413 (> `max_upload_mb`), 409 (même nom mais autre contenu, pour ne jamais écraser), 404 (document inconnu), 503 (Ollama injoignable), 502 (Ollama répond mais échoue) ;
+  - **sécurité des envois** : `Path(filename).name` neutralise la traversée de chemin (`../../evil.pdf` → `data/raw/evil.pdf`) ; lecture limitée à `max_bytes + 1` octets ; un PDF illisible est supprimé après l'échec ;
+  - `DELETE` supprime aussi le PDF de `data/raw/`, sinon il serait réindexé au prochain `build_index` ;
+  - dépendances FastAPI sous la forme `Annotated[..., Depends(...)]` (forme recommandée ; règle Ruff B008) ; `create_app(settings, pipeline)` permet d'injecter un pipeline de test ;
+  - **préchauffage** du modèle d'embeddings au démarrage du serveur, pour que la première question ne paie pas les 15 s de chargement.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -472,6 +499,29 @@ Phase 8, vérifiée le 2026-10-15 :
 - `python -m scripts.ask "Que risque-t-on si l'on récupère trop de passages ?"` sur le vrai index (28 chunks) : la recherche fonctionne et Ollama est absent. On obtient le message `⚠️ Ollama est injoignable…`, suivi des 5 passages retrouvés (scores 0,842 à 0,829). Le passage [2] (`02_embeddings_recherche_vectorielle.pdf, p. 1`) contient la preuve attendue (« un nombre K trop élevé peut ajouter du bruit »).
 - `python -m scripts.build_index` (après le passage à `build_pipeline`) : 3 × `skipped`, 28 chunks, 0,0 s.
 - **Non vérifié** : la qualité des réponses générées (Ollama absent). Elle sera mesurable avec `scripts/evaluate_rag.py` (Phase 11) dès qu'Ollama sera installé.
+- Commit `37f488f`
+
+Phase 9, vérifiée le 2026-10-15 :
+
+- `pip install fastapi python-multipart` : fastapi 0.143.1, starlette 1.8.0, python-multipart 0.0.32 ; uvicorn 0.54.0 était déjà installé (dépendance de chromadb) ; `pip check` : OK
+- Constantes HTTP dépréciées dans Starlette 1.8 (vérifié avec `-W error`) : `HTTP_422_UNPROCESSABLE_ENTITY` → `HTTP_422_UNPROCESSABLE_CONTENT`, `HTTP_413_REQUEST_ENTITY_TOO_LARGE` → `HTTP_413_CONTENT_TOO_LARGE`
+- 1re exécution des tests de l'API : **1 échec** (`casse.pdf` → `PermissionError: [WinError 32]`). **Vrai bug** : sous Windows, quand `pymupdf.open(chemin)` échoue sur un PDF corrompu, le fichier reste verrouillé et l'API ne peut plus le supprimer. Correction dans `load_pdf` : lecture des octets, puis `pymupdf.open(stream=…, filetype="pdf")`.
+- Autre incident : la sortie de pytest faisait 2 Mo, parce que l'identifiant automatique du cas « fichier trop gros » contenait 1 Mo de zéros. Corrigé avec `ids=[...]`.
+- `ruff check` : 5 × B008 (`Depends` en valeur par défaut) → passage à `Annotated` ; `python -m pytest -q` : **164 passed, 2 deselected**, 1 avertissement de bibliothèque (`StarletteDeprecationWarning` : TestClient recommande `httpx2`, sans effet ; non traité pour ne pas ajouter de dépendance).
+- **Vrai serveur** (`uvicorn app.main:app --port 8765`, vrai index de 28 chunks) :
+  - `GET /health` → `{"status":"ok","documents":3,"chunks":28,"llm_available":false,"llm_model":"qwen2.5:3b"}`
+  - `GET /documents` → les 3 PDF (9, 9 et 10 chunks) ; `GET /docs` → 200
+  - `POST /ask` → **503** avec le message « Ollama est injoignable… » (attendu) ; question vide → 422 ; envoi d'un `.txt` → 415
+  - `POST /documents` avec un PDF généré → `indexed`, 1 chunk ; `DELETE` → `deleted_chunks: 1` ; ensuite `/health` = 28 chunks et `data/raw/` contient les 3 PDF d'origine (état restauré)
+- **Mesures de latence → 2 corrections** :
+
+  | Situation | Avant | Après |
+  |---|---|---|
+  | `/ask` avec Ollama absent | 4,1 s | **1,0 s** |
+  | 1er `/ask` après le démarrage | 20,2 s | **1,4 s** (démarrage du serveur : ~13 s) |
+
+  - Cause 1 : sous Windows, une connexion refusée coûte environ 2 s par adresse (mesuré : `localhost` 4,42 s, contre 2,26 s pour `127.0.0.1`, car `localhost` essaie IPv6 puis IPv4). Corrections : URL par défaut `127.0.0.1` + délai de **connexion** de 1 s (le délai de génération reste de 120 s).
+  - Cause 2 : chargement paresseux du modèle à la 1re question. Correction : préchauffage au démarrage de l'API.
 
 ## Données de travail
 
@@ -493,4 +543,4 @@ Phase 8, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 9 — API REST FastAPI.
+Phase 10 — Interface Streamlit.

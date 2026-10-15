@@ -59,7 +59,7 @@ def test_llm_default_values() -> None:
     settings = make_settings()
 
     # Ollama local, modèle ~3B, température basse
-    assert settings.ollama_base_url == "http://localhost:11434"
+    assert settings.ollama_base_url == "http://127.0.0.1:11434"
     assert settings.ollama_model == "qwen2.5:3b"
     assert settings.llm_temperature == 0.1
 

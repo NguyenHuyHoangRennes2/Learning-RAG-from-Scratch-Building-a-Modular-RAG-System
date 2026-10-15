@@ -30,6 +30,7 @@
 - [Phase 6 — Recherche sémantique et évaluation](#phase-6--recherche-sémantique-et-évaluation-de-la-recherche)
 - [Phase 7 — Intégration du LLM (Ollama)](#phase-7--intégration-du-llm-ollama)
 - [Phase 8 — Pipeline RAG complet](#phase-8--pipeline-rag-complet)
+- [Phase 9 — API REST (FastAPI)](#phase-9--api-rest-fastapi)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -2283,6 +2284,107 @@ question ─► Retriever (embed_query + search) ◄─────────�
 
 ---
 
+# Phase 9 — API REST (FastAPI)
+
+**Objectif de la phase** : rendre le RAG utilisable par **n'importe quel programme** (interface web, script, autre service) grâce à des requêtes HTTP.
+
+> Phase réalisée en **mode autonome** le 2026-10-15.
+
+| Méthode | Route | Rôle | Réponses possibles |
+|---|---|---|---|
+| GET | `/health` | État : documents, chunks, LLM disponible ? | 200 |
+| POST | `/ask` | `{"question": "..."}` → réponse + sources numérotées | 200, 422, 502, 503 |
+| GET | `/documents` | Documents indexés | 200 |
+| POST | `/documents` | Envoi d'un PDF (multipart) → indexation | 201, 409, 413, 415, 422 |
+| DELETE | `/documents/{id}` | Retire un document (index + fichier) | 200, 404 |
+| GET | `/docs` | Documentation interactive générée automatiquement | 200 |
+
+**Lancer l'API** :
+```powershell
+uvicorn app.main:app --reload
+# puis ouvrir http://127.0.0.1:8000/docs
+```
+
+## Étape 9.1 — Dépendances et schémas
+
+- Installé et figé : `fastapi==0.143.1` (le framework), `uvicorn==0.54.0` (le serveur, déjà tiré par ChromaDB, déclaré car on l'utilise directement), `python-multipart==0.0.32` (indispensable pour recevoir des fichiers).
+- Créé `app/api/schemas.py` : `AskRequest` (question de 1 à 1 000 caractères), `AskResponse` + `SourceOut`, `IngestResponse`, `DocumentOut`, `DeleteResponse`, `HealthResponse`.
+
+**Pourquoi Pydantic ici, et pas des dataclasses ?**
+- Les données de l'API viennent de **l'extérieur**, donc ne sont pas fiables. Pydantic **valide** (`min_length`, `max_length`), **convertit** le JSON et **documente** automatiquement (OpenAPI).
+- À l'intérieur de l'application, les dataclasses suffisent. On convertit à la frontière (`AskResponse.from_answer(result)`).
+
+## Étape 9.2 — Routes et application
+
+- `app/api/routes.py` : chaque route **valide → appelle `RAGPipeline` → convertit**. Aucune logique RAG dans les routes.
+- `app/main.py` : `create_app(settings, pipeline)` crée l'application. Son **cycle de vie** (`lifespan`) configure le logging, construit le pipeline et **précharge** le modèle d'embeddings.
+
+### Notions apprises
+
+**REST et codes HTTP**
+- **2xx** succès : 200 OK, 201 Created (document indexé).
+- **4xx** erreur du **client** : 404 introuvable, 409 conflit, 413 trop gros, 415 mauvais type, 422 contenu invalide.
+- **5xx** erreur du **serveur** ou d'un service tiers : 502 *Bad Gateway* (Ollama a mal répondu), 503 *Service Unavailable* (Ollama absent, réessayer plus tard).
+- **Pourquoi c'est important** : le client (l'interface Streamlit) peut réagir correctement, par exemple « réessayez plus tard » en cas de 503, ou « ce n'est pas un PDF » en cas de 415.
+
+**Injection de dépendances FastAPI (`Depends`)**
+- `PipelineDep = Annotated[RAGPipeline, Depends(get_pipeline)]` : FastAPI appelle `get_pipeline(request)` et passe le résultat à la route.
+- Le pipeline est créé **une seule fois** au démarrage et rangé dans `app.state`. En test, on injecte un pipeline factice avec `create_app(settings, fake_pipeline)`.
+
+**Cycle de vie (`lifespan`)**
+- Le code **avant** `yield` s'exécute au démarrage du serveur, celui **après** à l'arrêt. C'est l'endroit pour les initialisations coûteuses (charger un modèle).
+
+**Sécurité des envois de fichiers**
+- **Traversée de chemin** : un nom comme `../../evil.pdf` pourrait écrire hors de `data/raw/`. `Path(filename).name` ne garde que `evil.pdf`.
+- **Ne pas croire l'extension** : on vérifie aussi la **signature** (les 5 premiers octets `%PDF-`, le « nombre magique » du format).
+- **Taille bornée** : on lit au plus `max_bytes + 1` octets, ce qui suffit pour savoir que la limite est dépassée, sans charger un fichier énorme en mémoire.
+- **Ne jamais écraser** : un autre contenu sous le même nom → 409, l'utilisateur doit renommer.
+
+## Étape 9.3 — Tests et vrai serveur
+
+### Tests (pytest)
+
+**Fichier** : `tests/integration/test_api.py` (16 tests, avec `fastapi.testclient.TestClient`)
+
+| Test | Ce qu'il vérifie |
+|---|---|
+| `test_health_reports_empty_index` | `/health` sur un index vide |
+| `test_upload_indexes_then_skips_duplicate` | 201 `indexed`, fichier enregistré, 2e envoi → `skipped`, listé une fois |
+| `test_invalid_uploads_are_rejected` (×4) | `.txt` → 415 ; faux PDF → 415 ; PDF corrompu → 422 ; > 1 Mo → 413 ; jamais de fichier conservé |
+| `test_same_name_with_other_content_is_a_conflict` | 409 |
+| `test_path_traversal_in_filename_is_neutralized` | `../../evil.pdf` → `raw/evil.pdf` |
+| `test_ask_returns_answer_with_numbered_sources` | Réponse, sources numérotées, `cited`, page |
+| `test_invalid_questions_are_rejected` (×3) | `""`, `"   "`, 1 001 caractères → 422 |
+| `test_llm_failures_become_http_errors` (×2) | `LLMUnavailableError` → 503 ; `LLMError` → 502 |
+| `test_delete_removes_chunks_and_file` | Chunks et fichier supprimés ; inconnu → 404 |
+| `test_openapi_documentation_is_generated` | Les 4 chemins sont dans `/openapi.json` |
+
+**Techniques utilisées :**
+- **`TestClient`** : il envoie des requêtes HTTP à l'application **en mémoire**, sans démarrer de serveur. `with TestClient(app)` exécute aussi le `lifespan`.
+- **`FailingLLM`** : un faux LLM qui lève une erreur, pour tester la traduction en 502/503.
+- **`ids=[...]` dans `parametrize`** : des noms de tests courts et lisibles.
+
+### Ce que les tests et les mesures ont révélé (et corrigé)
+
+1. **Bug Windows** (trouvé par un test) : après un échec de `pymupdf.open(chemin)` sur un PDF corrompu, le fichier restait **verrouillé** (`WinError 32`), et l'API ne pouvait plus le supprimer. **Correction** : `pymupdf.open(stream=chemin.read_bytes(), filetype="pdf")` ouvre le PDF depuis la mémoire, sans garder le fichier ouvert.
+2. **Latence d'erreur** (mesurée avec `curl` sur le vrai serveur) : `/ask` mettait **4,1 s** à répondre 503 quand Ollama est absent.
+   - Mesure : `localhost` 4,42 s contre 2,26 s pour `127.0.0.1`. Sous Windows, chaque tentative refusée coûte environ 2 s, et `localhost` en fait deux (IPv6 puis IPv4).
+   - **Corrections** : URL par défaut `127.0.0.1` + un délai de **connexion** de 1 s, distinct du délai de **génération** (120 s). Résultat : **1,0 s**.
+3. **Première question lente** : 20,2 s (chargement paresseux du modèle). **Correction** : préchauffage au démarrage. Le serveur démarre en environ 13 s, et la 1re question répond en **1,4 s**.
+
+- Vrai serveur : `/health`, `/documents`, `/docs`, `/ask` (503 attendu), envoi + suppression d'un PDF : tout se comporte comme prévu, et l'état initial est restauré.
+- `python -m pytest -q` → **164 passed, 2 deselected**.
+
+### À retenir
+
+- Les routes ne font que traduire HTTP ⇄ pipeline ; les erreurs métier deviennent des codes HTTP précis.
+- Pydantic à la frontière, dataclasses à l'intérieur.
+- Valider un fichier envoyé : nom, signature, taille, conflit.
+- **Mesurer sur le vrai serveur** révèle des problèmes invisibles en test (latence réseau Windows, chargement à froid).
+- Séparer le délai de connexion du délai de réponse.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -2335,9 +2437,10 @@ question ─► Retriever (embed_query + search) ◄─────────�
 | `tests/unit/test_dataset.py` | `app/evaluation/dataset.py` | 2 | 6.2 | [voir](#étape-62--métriques-et-jeu-de-questions) |
 | `tests/integration/test_retrieval_eval.py` | `app/evaluation/retrieval_eval.py` | 1 | 6.3 | [voir](#étape-63--comparaison-des-réglages) |
 | `tests/unit/test_prompts.py` | `app/generation/prompts.py` | 7 | 7.2 | [voir](#étape-72--les-prompts) |
-| `tests/unit/test_llm.py` | `app/generation/llm.py` | 5 | 7.3 | [voir](#étape-73--le-client-ollama) |
+| `tests/unit/test_llm.py` | `app/generation/llm.py` | 6 | 7.3, 9.3 | [voir](#étape-73--le-client-ollama) |
 | `tests/integration/test_rag_pipeline.py` | `app/rag/pipeline.py` (Q/R) | 7 | 8.2 | [voir](#étape-82--le-pipeline-de-questions-réponses) |
-| **Total** | | **149** (115 unitaires + 32 d'intégration rapides + 2 lents) | | |
+| `tests/integration/test_api.py` | `app/api/`, `app/main.py` | 16 | 9.3 | [voir](#étape-93--tests-et-vrai-serveur) |
+| **Total** | | **166** (116 unitaires + 48 d'intégration rapides + 2 lents) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -2365,6 +2468,8 @@ question ─► Retriever (embed_query + search) ◄─────────�
 | 2026-10-15 | 6 | `python -m pytest -q` | 127 passed, 2 deselected in 2.95s |
 | 2026-10-15 | 7 | `python -m pytest -q` | 140 passed, 2 deselected in 3.07s |
 | 2026-10-15 | 8 | `python -m pytest -q` | 147 passed, 2 deselected in 3.39s |
+| 2026-10-15 | 9 | `python -m pytest -q` (1re fois) | **1 failed** (`WinError 32`, PDF verrouillé : vrai bug) |
+| 2026-10-15 | 9 | après corrections | 164 passed, 2 deselected in 5.03s |
 
 ## Lire un résultat pytest
 
@@ -2538,6 +2643,18 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Racine de composition | Seul endroit où les composants sont créés et branchés | 8.2 |
 | Dégradation gracieuse | Continuer à rendre un service partiel quand une brique tombe | 8.3 |
 | Latence | Temps de réponse d'une étape (recherche, génération) | 8.1 |
+| FastAPI | Framework web Python : routes, validation, documentation automatique | 9.1 |
+| Uvicorn / ASGI | Serveur qui exécute une application web Python asynchrone | 9.1 |
+| OpenAPI (`/docs`) | Description standard d'une API, générée par FastAPI | 9.1 |
+| Code HTTP | 2xx succès, 4xx erreur du client, 5xx erreur du serveur | 9.2 |
+| `Depends` / `Annotated` | Injection de dépendances FastAPI | 9.2 |
+| Lifespan | Code exécuté au démarrage et à l'arrêt du serveur | 9.2 |
+| Multipart | Format d'envoi de fichiers dans une requête HTTP | 9.2 |
+| Traversée de chemin | Attaque par un nom de fichier comme `../../x` | 9.2 |
+| Nombre magique | Premiers octets qui identifient un format (`%PDF-`) | 9.2 |
+| `TestClient` | Envoie des requêtes HTTP à l'application en mémoire | 9.3 |
+| Démarrage à froid | Lenteur du premier appel (chargement d'un modèle) ; corrigée par préchauffage | 9.3 |
+| Délai de connexion | Temps maximal pour établir la connexion, distinct du temps de réponse | 9.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

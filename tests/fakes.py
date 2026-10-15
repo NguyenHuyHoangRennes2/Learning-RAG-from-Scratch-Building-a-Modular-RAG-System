@@ -4,8 +4,20 @@ Ils remplacent les composants lents ou externes (modèle d'embeddings, LLM) par
 des versions minuscules, rapides et PRÉVISIBLES.
 """
 
+# Path représente un chemin de fichier
+from pathlib import Path
+
 # Any : type des arguments nommés acceptés par encode()
 from typing import Any
+
+# PyMuPDF sert à fabriquer des PDF de test en mémoire
+import pymupdf
+
+# Composants réels assemblés autour des faux
+from app.embeddings.embedding_model import EmbeddingModel
+from app.rag.pipeline import IngestionPipeline, QuestionAnsweringPipeline, RAGPipeline
+from app.retrieval.retriever import Retriever
+from app.vectorstore.chroma_store import ChromaStore
 
 # Petit vocabulaire : chaque mot correspond à une dimension du faux vecteur
 VOCABULARY = (
@@ -71,3 +83,35 @@ class FakeLLM:
 
         # Réponse scénarisée
         return self.answer
+
+
+def make_fake_pipeline(tmp_path: Path, llm: Any) -> RAGPipeline:
+    """Pipeline complet : faux modèle par mots-clés, VRAIE ChromaDB temporaire, LLM fourni."""
+    # Un seul modèle partagé par l'ingestion et la recherche
+    embedder = EmbeddingModel("fake-keywords", encoder=KeywordEncoder())
+
+    # Base vectorielle dans le dossier temporaire du test
+    store = ChromaStore(tmp_path / "chroma", "test_chunks", "fake-keywords")
+
+    # Assemble les deux sous-pipelines (petits chunks : 200 / 40)
+    return RAGPipeline(
+        ingestion=IngestionPipeline(embedder, store, 200, 40, "sentence"),
+        qa=QuestionAnsweringPipeline(Retriever(embedder, store, top_k=2), llm),
+        raw_data_dir=tmp_path / "raw",
+    )
+
+
+def pdf_bytes(*pages: str) -> bytes:
+    """Contenu binaire d'un PDF dont chaque page contient le texte donné."""
+    # Document vide, en mémoire
+    doc = pymupdf.open()
+
+    # Une page par texte
+    for text in pages:
+        # Écrit le texte en haut à gauche
+        doc.new_page().insert_text((72, 72), text)
+
+    # Sérialise le PDF en octets, puis libère le document
+    content = doc.tobytes()
+    doc.close()
+    return content

@@ -80,8 +80,9 @@ class Settings(BaseSettings):
     retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
     # --- LLM via Ollama (Phase 7) ---
-    # Adresse de l'API REST locale d'Ollama (aucune clé, aucun appel Internet)
-    ollama_base_url: str = "http://localhost:11434"
+    # Adresse de l'API REST locale d'Ollama (aucune clé, aucun appel Internet) ;
+    # 127.0.0.1 plutôt que localhost : évite un essai IPv6 inutile sous Windows (~2 s, mesuré)
+    ollama_base_url: str = "http://127.0.0.1:11434"
 
     # Modèle Ollama (~3B paramètres : tient dans 4 Go de VRAM ; bon en français)
     ollama_model: str = "qwen2.5:3b"
@@ -94,6 +95,10 @@ class Settings(BaseSettings):
 
     # Délai maximal d'attente d'une réponse (un petit modèle sur CPU peut être lent)
     llm_timeout_seconds: float = Field(default=120.0, gt=0)
+
+    # --- API (Phase 9) ---
+    # Taille maximale d'un PDF envoyé à l'API, en mégaoctets (protège le disque et la mémoire)
+    max_upload_mb: int = Field(default=20, gt=0)
 
     @model_validator(mode="after")
     def _check_chunk_overlap(self) -> "Settings":
