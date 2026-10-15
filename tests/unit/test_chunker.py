@@ -6,8 +6,17 @@ import itertools
 # pytest fournit pytest.raises et pytest.mark.parametrize
 import pytest
 
+# Le type des stratégies ("fixed" ou "sentence")
+from app.core.config import ChunkStrategy
+
 # Les fonctions que l'on teste
-from app.ingestion.chunker import chunk_page_fixed, split_text_fixed
+from app.ingestion.chunker import (
+    chunk_page,
+    chunk_pages,
+    split_sentences,
+    split_text_fixed,
+    split_text_sentence,
+)
 
 # La page donnée en entrée au chunker
 from app.models import DocumentPage
@@ -110,12 +119,119 @@ def test_invalid_parameters_are_rejected(
         split_text_fixed("du texte", chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
 
-# --- chunk_page_fixed ---
+# --- split_sentences ---
 
 
-def test_chunks_keep_the_page_origin_and_are_numbered() -> None:
-    # Page de 250 caractères découpée en fenêtres de 100 avec 20 de chevauchement
-    chunks = chunk_page_fixed(make_page("z" * 250), chunk_size=100, chunk_overlap=20)
+def test_sentences_are_split_on_endings_and_line_breaks() -> None:
+    # Un titre sur sa ligne, puis un paragraphe de 3 phrases (dont « ! » précédé d'une espace)
+    text = "1. Définition\nLe RAG cherche des passages. Il cite ses sources ! Pourquoi ? Pour vérifier."
+
+    # Le titre est gardé entier ; chaque phrase devient un élément
+    assert split_sentences(text) == [
+        "1. Définition",
+        "Le RAG cherche des passages.",
+        "Il cite ses sources !",
+        "Pourquoi ?",
+        "Pour vérifier.",
+    ]
+
+
+def test_numbers_and_lowercase_do_not_end_a_sentence() -> None:
+    # "3.5" (pas d'espace après le point), "2.3. Les" (numéro de titre), "etc. puis" (minuscule)
+    text = "2.3. Les versions 3.5 et 4.0 changent tout, etc. puis on mesure."
+
+    # Aucune de ces coupures n'est une vraie fin de phrase : un seul élément
+    assert split_sentences(text) == [text]
+
+
+# --- split_text_sentence ---
+
+
+def sentence(first_letter: str, length: int) -> str:
+    """Crée une phrase de ``length`` caractères : majuscule, des "x", puis un point."""
+    # Exemple : sentence("A", 5) == "Axxx."
+    return first_letter + "x" * (length - 2) + "."
+
+
+def test_sentences_are_packed_until_chunk_size() -> None:
+    # 3 phrases de 30 caractères
+    a, b, c = sentence("A", 30), sentence("B", 30), sentence("C", 30)
+
+    # A + " " + B = 61 <= 70 ; ajouter C donnerait 92 > 70 : C commence un nouveau morceau
+    pieces = split_text_sentence(f"{a} {b} {c}", chunk_size=70, chunk_overlap=0)
+
+    # Deux morceaux, faits de phrases entières
+    assert pieces == [f"{a} {b}", c]
+
+
+def test_overlap_repeats_whole_sentences() -> None:
+    # 3 phrases de 30 caractères
+    a, b, c = sentence("A", 30), sentence("B", 30), sentence("C", 30)
+
+    # overlap=35 : la dernière phrase (B, 30 car.) tient dans le chevauchement, pas A + B (61)
+    pieces = split_text_sentence(f"{a} {b} {c}", chunk_size=70, chunk_overlap=35)
+
+    # B est répétée au début du second morceau
+    assert pieces == [f"{a} {b}", f"{b} {c}"]
+
+
+def test_sentence_longer_than_overlap_is_not_repeated() -> None:
+    # 3 phrases de 30 caractères
+    a, b, c = sentence("A", 30), sentence("B", 30), sentence("C", 30)
+
+    # overlap=20 < 30 : aucune phrase entière ne tient dans le chevauchement
+    pieces = split_text_sentence(f"{a} {b} {c}", chunk_size=70, chunk_overlap=20)
+
+    # Pas de répétition : on ne coupe jamais une phrase pour remplir le chevauchement
+    assert pieces == [f"{a} {b}", c]
+
+
+def test_overlap_shrinks_to_make_room_for_the_next_sentence() -> None:
+    # Deux phrases de 30 puis une de 45
+    a, b, e = sentence("A", 30), sentence("B", 30), sentence("E", 45)
+
+    # overlap=65 permettrait de reprendre A + B (61), mais A + B + E (107) dépasse 70 :
+    # on retire A (B + E = 76, encore trop), puis B : le second morceau ne contient que E
+    pieces = split_text_sentence(f"{a} {b} {e}", chunk_size=70, chunk_overlap=65)
+
+    # Aucun morceau ne dépasse la taille, même avec un grand chevauchement
+    assert pieces == [f"{a} {b}", e]
+
+
+def test_giant_sentence_falls_back_to_fixed_windows() -> None:
+    # Une phrase normale (30 car.) puis une phrase géante (150 car.) plus grande que chunk_size
+    a, giant = sentence("A", 30), sentence("D", 150)
+
+    # size=60, overlap=10 : la phrase géante est coupée en fenêtres fixes (pas de 50)
+    pieces = split_text_sentence(f"{a} {giant}", chunk_size=60, chunk_overlap=10)
+
+    # A seule, puis les fenêtres [0, 60), [50, 110), [100, 150) de la phrase géante
+    assert pieces == [a, giant[0:60], giant[50:110], giant[100:150]]
+
+
+def test_sentence_strategy_validates_its_parameters() -> None:
+    # Mêmes règles que "fixed" : overlap >= size est refusé
+    with pytest.raises(ValueError, match="chunk_overlap"):
+        # Tentative de découpage invalide
+        split_text_sentence("Une phrase.", chunk_size=100, chunk_overlap=100)
+
+
+def test_sentence_strategy_on_empty_text_gives_no_piece() -> None:
+    # Un texte vide ne produit aucun morceau
+    assert split_text_sentence("", chunk_size=100, chunk_overlap=10) == []
+
+
+# --- chunk_page et chunk_pages ---
+
+
+# Les deux stratégies doivent produire des chunks avec les mêmes métadonnées
+@pytest.mark.parametrize("strategy", ["fixed", "sentence"])
+def test_chunks_keep_the_page_origin_and_are_numbered(strategy: ChunkStrategy) -> None:
+    # Page de 250 caractères sans fin de phrase, fenêtres de 100 avec 20 de chevauchement
+    # (avec "sentence", c'est une phrase géante : elle est coupée comme avec "fixed")
+    chunks = chunk_page(
+        make_page("z" * 250), chunk_size=100, chunk_overlap=20, strategy=strategy
+    )
 
     # Débuts 0, 80, 160 : la fenêtre [160, 260) atteint la fin, donc 3 chunks
     assert [chunk.chunk_index for chunk in chunks] == [0, 1, 2]
@@ -140,10 +256,43 @@ def test_blank_pieces_are_skipped_without_gap_in_numbering() -> None:
     text = "a" * 10 + " " * 10 + "b" * 10
 
     # Fenêtres de 10 sans chevauchement : "aaaaaaaaaa", "          ", "bbbbbbbbbb"
-    chunks = chunk_page_fixed(make_page(text), chunk_size=10, chunk_overlap=0)
+    chunks = chunk_page(
+        make_page(text), chunk_size=10, chunk_overlap=0, strategy="fixed"
+    )
 
     # Le morceau vide est ignoré : seuls les deux morceaux utiles deviennent des chunks
     assert [chunk.text for chunk in chunks] == ["a" * 10, "b" * 10]
 
     # La numérotation reste continue (0, 1), sans trou à la place du morceau ignoré
     assert [chunk.chunk_index for chunk in chunks] == [0, 1]
+
+
+def test_unknown_strategy_is_rejected() -> None:
+    # Une stratégie non implémentée doit lever une ValueError claire
+    with pytest.raises(ValueError, match="stratégie inconnue"):
+        # "semantic" n'existe pas (le type est contourné volontairement pour le test)
+        chunk_page(
+            make_page("Du texte."),
+            chunk_size=100,
+            chunk_overlap=10,
+            strategy="semantic",  # type: ignore[arg-type]
+        )
+
+
+def test_chunk_pages_never_crosses_pages_and_restarts_numbering() -> None:
+    # Deux pages d'un même document
+    page_1 = DocumentPage("abc123", "cours.pdf", 1, "Première page. Elle parle du RAG.")
+    page_2 = DocumentPage(
+        "abc123", "cours.pdf", 2, "Deuxième page. Elle parle des embeddings."
+    )
+
+    # Taille large : chaque page tient dans un seul chunk
+    chunks = chunk_pages(
+        [page_1, page_2], chunk_size=800, chunk_overlap=150, strategy="sentence"
+    )
+
+    # Un chunk par page, chacun rattaché à SA page, et l'index repart de 0 sur chaque page
+    assert [chunk.chunk_id for chunk in chunks] == ["abc123-p1-c0", "abc123-p2-c0"]
+
+    # Le texte de la page 2 ne déborde pas dans le chunk de la page 1
+    assert chunks[0].text == "Première page. Elle parle du RAG."

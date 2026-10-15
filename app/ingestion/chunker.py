@@ -5,20 +5,36 @@ ce qui garde exacte la citation « p. N ».
 
 Stratégies :
     - "fixed" (étape 3.3) : fenêtres de taille fixe, avancées de ``size - overlap``.
-    - "sentence" (étape 3.4) : à venir.
+    - "sentence" (étape 3.4) : phrases entières regroupées jusqu'à ``size``.
 
-Ce module ne lit ni la configuration ni aucun fichier : il reçoit les paramètres
-explicitement, ce qui le rend simple à tester avec n'importe quelles valeurs.
+Ce module n'appelle pas ``get_settings()`` et ne lit aucun fichier : il reçoit les
+paramètres explicitement, ce qui le rend simple à tester avec n'importe quelles valeurs.
 """
 
-# logging pour tracer le nombre de chunks produits par page
+# logging pour tracer le nombre de chunks produits
 import logging
 
-# Les structures de données manipulées : une page en entrée, des chunks en sortie
+# re : expressions régulières, pour repérer les fins de phrase
+import re
+
+# Callable : le type « fonction », pour la table des stratégies
+from collections.abc import Callable
+
+# Le type des stratégies autorisées ("fixed" ou "sentence"), défini une seule fois dans la config
+from app.core.config import ChunkStrategy
+
+# Les structures de données manipulées : des pages en entrée, des chunks en sortie
 from app.models import Chunk, DocumentPage
 
 # Logger nommé d'après le module : "app.ingestion.chunker"
 logger = logging.getLogger(__name__)
+
+# Fin de phrase = espaces précédés de . ! ? ou … ET suivis d'une majuscule (ou « " ( ).
+# (?<!\d\.) exclut "1. Définition" : un chiffre suivi d'un point est un numéro de titre.
+SENTENCE_BOUNDARY = re.compile(r"(?<=[.!?…])(?<!\d\.)\s+(?=[A-ZÀ-Ý«\"(])")
+
+# Séparateur utilisé pour recoller les phrases d'un même chunk
+SENTENCE_SEPARATOR = " "
 
 
 def _validate_chunk_params(chunk_size: int, chunk_overlap: int) -> None:
@@ -39,6 +55,9 @@ def _validate_chunk_params(chunk_size: int, chunk_overlap: int) -> None:
         raise ValueError(
             f"chunk_overlap ({chunk_overlap}) doit être < chunk_size ({chunk_size})"
         )
+
+
+# --- Stratégie "fixed" (étape 3.3) ---
 
 
 def split_text_fixed(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
@@ -89,12 +108,156 @@ def split_text_fixed(text: str, chunk_size: int, chunk_overlap: int) -> list[str
     return pieces
 
 
-def chunk_page_fixed(
-    page: DocumentPage, chunk_size: int, chunk_overlap: int
+# --- Stratégie "sentence" (étape 3.4) ---
+
+
+def split_sentences(text: str) -> list[str]:
+    """Découpe un texte en phrases (et en titres, qui sont sur leur propre ligne).
+
+    Exemple : "1. Titre\\nPhrase un. Phrase deux." → ["1. Titre", "Phrase un.", "Phrase deux."]
+    """
+    # Liste des phrases trouvées
+    sentences: list[str] = []
+
+    # Après le nettoyage (2.4), un saut de ligne sépare deux paragraphes ou un titre de son texte
+    for line in text.split("\n"):
+        # Coupe la ligne à chaque fin de phrase repérée par l'expression régulière
+        for sentence in SENTENCE_BOUNDARY.split(line):
+            # Retire les espaces au début et à la fin de la phrase
+            sentence = sentence.strip()
+
+            # Ignore les morceaux vides (lignes blanches)
+            if sentence:
+                # Garde la phrase
+                sentences.append(sentence)
+
+    # Renvoie les phrases dans l'ordre du texte
+    return sentences
+
+
+def _joined_length(sentences: list[str]) -> int:
+    """Longueur du texte obtenu en recollant les phrases avec SENTENCE_SEPARATOR."""
+    # Aucune phrase : texte vide
+    if not sentences:
+        # Longueur nulle
+        return 0
+
+    # Somme des phrases + un séparateur entre chaque paire de phrases voisines
+    return sum(len(sentence) for sentence in sentences) + len(SENTENCE_SEPARATOR) * (
+        len(sentences) - 1
+    )
+
+
+def _overlap_tail(sentences: list[str], chunk_overlap: int) -> list[str]:
+    """Dernières phrases entières d'un chunk dont la longueur totale tient dans ``chunk_overlap``.
+
+    Le chevauchement se fait par phrases entières : si la dernière phrase est plus
+    longue que ``chunk_overlap``, aucune phrase n'est reprise.
+    """
+    # Phrases reprises, dans l'ordre du texte
+    tail: list[str] = []
+
+    # On remonte depuis la dernière phrase du chunk
+    for sentence in reversed(sentences):
+        # Si ajouter cette phrase dépasse le chevauchement autorisé, on s'arrête
+        if _joined_length([sentence, *tail]) > chunk_overlap:
+            # Les phrases plus anciennes ne seront pas reprises non plus
+            break
+
+        # Ajoute la phrase au DÉBUT, pour garder l'ordre du texte
+        tail.insert(0, sentence)
+
+    # Renvoie les phrases à reprendre au début du chunk suivant
+    return tail
+
+
+def split_text_sentence(text: str, chunk_size: int, chunk_overlap: int) -> list[str]:
+    """Regroupe des phrases entières en morceaux d'au plus ``chunk_size`` caractères.
+
+    - Les phrases sont ajoutées une à une tant que le morceau ne dépasse pas ``chunk_size``.
+    - Le morceau suivant commence par les dernières phrases du précédent, dans la
+      limite de ``chunk_overlap`` caractères (chevauchement par phrases entières).
+    - Une phrase plus longue que ``chunk_size`` est découpée avec la stratégie "fixed".
+    """
+    # Mêmes règles de validation que la stratégie "fixed"
+    _validate_chunk_params(chunk_size, chunk_overlap)
+
+    # Morceaux terminés
+    pieces: list[str] = []
+
+    # Phrases du morceau en cours de construction
+    current: list[str] = []
+
+    # Parcourt les phrases dans l'ordre du texte
+    for sentence in split_sentences(text):
+        # Cas rare : une phrase seule dépasse déjà la taille maximale
+        if len(sentence) > chunk_size:
+            # On termine d'abord le morceau en cours, s'il contient quelque chose
+            if current:
+                # Recolle ses phrases et l'enregistre
+                pieces.append(SENTENCE_SEPARATOR.join(current))
+
+            # La phrase géante est coupée en fenêtres fixes (seul cas où l'on coupe une phrase)
+            pieces.extend(split_text_fixed(sentence, chunk_size, chunk_overlap))
+
+            # Le morceau suivant repart de zéro
+            current = []
+
+            # Passe à la phrase suivante
+            continue
+
+        # Si ajouter cette phrase ferait dépasser la taille, le morceau en cours est terminé
+        if current and _joined_length([*current, sentence]) > chunk_size:
+            # Recolle ses phrases et l'enregistre
+            pieces.append(SENTENCE_SEPARATOR.join(current))
+
+            # Le nouveau morceau commence par les dernières phrases du précédent (chevauchement)
+            current = _overlap_tail(current, chunk_overlap)
+
+            # Si le chevauchement + la nouvelle phrase dépassent encore la taille...
+            while current and _joined_length([*current, sentence]) > chunk_size:
+                # ...on retire la phrase reprise la plus ancienne
+                current.pop(0)
+
+        # Ajoute la phrase au morceau en cours
+        current.append(sentence)
+
+    # Le dernier morceau n'a pas encore été enregistré
+    if current:
+        # Recolle ses phrases et l'enregistre
+        pieces.append(SENTENCE_SEPARATOR.join(current))
+
+    # Renvoie les morceaux dans l'ordre du texte
+    return pieces
+
+
+# --- Point d'entrée commun aux deux stratégies ---
+
+# Table « nom de stratégie → fonction de découpage » : ajouter une stratégie = ajouter une ligne
+SPLITTERS: dict[ChunkStrategy, Callable[[str, int, int], list[str]]] = {
+    # Fenêtres de taille fixe (étape 3.3)
+    "fixed": split_text_fixed,
+    # Phrases entières regroupées (étape 3.4)
+    "sentence": split_text_sentence,
+}
+
+
+def chunk_page(
+    page: DocumentPage,
+    chunk_size: int,
+    chunk_overlap: int,
+    strategy: ChunkStrategy,
 ) -> list[Chunk]:
-    """Découpe une page avec la stratégie "fixed" et renvoie des Chunk avec leurs métadonnées."""
-    # Découpe le texte brut de la page en morceaux
-    pieces = split_text_fixed(page.text, chunk_size, chunk_overlap)
+    """Découpe une page avec la stratégie choisie et renvoie des Chunk avec leurs métadonnées."""
+    # Une stratégie inconnue est refusée avec un message clair (plutôt qu'un KeyError obscur)
+    if strategy not in SPLITTERS:
+        # Le message liste les stratégies disponibles
+        raise ValueError(
+            f"stratégie inconnue : {strategy!r} (disponibles : {sorted(SPLITTERS)})"
+        )
+
+    # Découpe le texte de la page avec la fonction de la stratégie choisie
+    pieces = SPLITTERS[strategy](page.text, chunk_size, chunk_overlap)
 
     # Liste des chunks produits pour cette page
     chunks: list[Chunk] = []
@@ -125,12 +288,42 @@ def chunk_page_fixed(
 
     # Trace en DEBUG (détail, masqué au niveau INFO par défaut)
     logger.debug(
-        "%s p.%d : %d caractère(s) → %d chunk(s)",
+        "%s p.%d [%s] : %d caractère(s) → %d chunk(s)",
         page.source,
         page.page_number,
+        strategy,
         len(page.text),
         len(chunks),
     )
 
     # Renvoie les chunks de la page, dans l'ordre
+    return chunks
+
+
+def chunk_pages(
+    pages: list[DocumentPage],
+    chunk_size: int,
+    chunk_overlap: int,
+    strategy: ChunkStrategy,
+) -> list[Chunk]:
+    """Découpe une liste de pages, page par page, et renvoie tous les chunks."""
+    # Tous les chunks de toutes les pages
+    chunks: list[Chunk] = []
+
+    # Chaque page est découpée séparément : un chunk ne traverse jamais deux pages
+    for page in pages:
+        # Ajoute les chunks de cette page à la liste globale
+        chunks.extend(chunk_page(page, chunk_size, chunk_overlap, strategy))
+
+    # Résumé en INFO : visible par défaut
+    logger.info(
+        "%d page(s) → %d chunk(s) (stratégie %s, size=%d, overlap=%d)",
+        len(pages),
+        len(chunks),
+        strategy,
+        chunk_size,
+        chunk_overlap,
+    )
+
+    # Renvoie les chunks dans l'ordre des pages
     return chunks

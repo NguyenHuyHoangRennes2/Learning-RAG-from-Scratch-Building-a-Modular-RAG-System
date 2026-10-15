@@ -23,6 +23,7 @@
   - [3.1 — Principes du chunking et paramètres](#étape-31--principes-du-chunking-et-paramètres)
   - [3.2 — Structure de données Chunk](#étape-32--structure-de-données-chunk)
   - [3.3 — Chunker « fixed »](#étape-33--chunker-stratégie-fixed)
+  - [3.4 — Chunker « sentence »](#étape-34--chunker-stratégie-sentence)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1427,6 +1428,105 @@ python -m pytest tests/unit/test_chunker.py -v
 
 ---
 
+## Étape 3.4 — Chunker, stratégie « sentence »
+
+> Statut : validée le 2026-10-15
+
+### Ce que j'ai fait
+
+- Ajouté à `app/ingestion/chunker.py` :
+  - `split_sentences(text)` : texte → liste de phrases (et de titres) ;
+  - `split_text_sentence(text, size, overlap)` : regroupe des phrases entières en morceaux ;
+  - `_overlap_tail(...)` : choisit les phrases à répéter au début du morceau suivant ;
+  - `_joined_length(...)` : longueur des phrases une fois recollées.
+- **Remplacé** `chunk_page_fixed` (étape 3.3) par `chunk_page(page, size, overlap, strategy)`, qui choisit la fonction dans une table `SPLITTERS`. Ajouté `chunk_pages(pages, ...)`, qui découpe toute une liste de pages.
+- Adapté les anciens tests (`strategy="fixed"`) et ajouté 12 nouveaux tests (25 au total dans le fichier).
+- Testé sur mes vrais PDF (800 / 150) :
+  ```
+  01_introduction_rag.pdf p.1: 2386 car., 27 phrases -> 4 chunks, tailles [782, 780, 719, 444]
+  02_embeddings_recherche_vectorielle.pdf p.1: 2315 car., 24 phrases -> 4 chunks, tailles [769, 723, 722, 474]
+  03_evaluation_rag.pdf p.1: 2454 car., 25 phrases -> 4 chunks, tailles [757, 751, 764, 382]
+  (+ 1 chunk pour chaque page 2)       TOTAL 15     Phrase la plus longue : 221
+  --- c0 FIN  : " pipelines fondamentaux Le pipeline d'ingestion prépare les documents."
+  --- c1 DEBUT: "2. Les deux pipelines fondamentaux Le pipeline d'ingestion prépare les"
+  ```
+  → La coupure tombe **en fin de phrase**. Le chevauchement répète des **phrases entières** (ici un titre + une phrase), au lieu de 150 caractères coupés n'importe où.
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_chunker.py` (12 tests ajoutés, 25 au total) · **Module testé** : `app/ingestion/chunker.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_sentences_are_split_on_endings_and_line_breaks` | Titre gardé entier ; coupe après `.`, `!`, `?` (même « sources ! » à la française) | Base de la stratégie |
+| `test_numbers_and_lowercase_do_not_end_a_sentence` | `3.5`, `2.3. Les`, `etc. puis` ne coupent pas | Évite les fausses fins de phrase |
+| `test_sentences_are_packed_until_chunk_size` | 30 + 1 + 30 = 61 ≤ 70, mais + 31 = 92 > 70 → `[A B, C]` | Regroupement glouton |
+| `test_overlap_repeats_whole_sentences` | overlap=35 → B répétée : `[A B, B C]` | Chevauchement par phrases entières |
+| `test_sentence_longer_than_overlap_is_not_repeated` | overlap=20 < 30 → aucune répétition | On ne coupe jamais une phrase pour le chevauchement |
+| `test_overlap_shrinks_to_make_room_for_the_next_sentence` | Le chevauchement est réduit pour ne pas dépasser 70 | `chunk_size` reste une limite stricte |
+| `test_giant_sentence_falls_back_to_fixed_windows` | Phrase de 150 car. > 60 → fenêtres fixes | Aucune phrase ne peut bloquer le découpage |
+| `test_sentence_strategy_validates_its_parameters` | overlap = size → `ValueError` | Mêmes règles que « fixed » |
+| `test_sentence_strategy_on_empty_text_gives_no_piece` | `""` → `[]` | Cas limite |
+| `test_chunks_keep_the_page_origin_and_are_numbered` (×2) | Métadonnées et ids, pour **les deux** stratégies | Les deux stratégies ont le même contrat |
+| `test_unknown_strategy_is_rejected` | `"semantic"` → `ValueError` « stratégie inconnue » | Message clair plutôt qu'un `KeyError` |
+| `test_chunk_pages_never_crosses_pages_and_restarts_numbering` | 2 pages → `-p1-c0`, `-p2-c0` | Un chunk = une seule page |
+
+**Techniques utilisées :**
+- **Fonction d'aide `sentence("A", 30)`** : fabrique une phrase de longueur **exacte**. On peut alors calculer à la main le résultat attendu (30 + 1 + 30 = 61).
+- **`parametrize` sur la stratégie** : le même test vérifie `"fixed"` et `"sentence"`.
+
+**Lancer ces tests :**
+```powershell
+python -m pytest tests/unit/test_chunker.py -v
+```
+
+**Résultat réel (2026-10-15)** : 25 passed dans ce fichier (74 au total)
+
+### Notions apprises
+
+**Découpage en phrases (*sentence splitting*)**
+- **Règle utilisée** : une phrase se termine par `. ! ? …`, suivi d'espaces, puis d'une **majuscule**. Un saut de ligne termine aussi une phrase.
+- **Expression régulière** : `(?<=[.!?…])(?<!\d\.)\s+(?=[A-ZÀ-Ý«"(])`
+  - `(?<=[.!?…])` (*lookbehind*) : juste **avant**, il y a une ponctuation finale ;
+  - `(?<!\d\.)` (*lookbehind négatif*) : mais **pas** « chiffre + point » (numéro de titre `1.`) ;
+  - `\s+` : les espaces, qui sont l'endroit où l'on coupe ;
+  - `(?=[A-ZÀ-Ý«"(])` (*lookahead*) : juste **après**, une majuscule ou un guillemet.
+  - Les *lookarounds* **regardent** sans **consommer** : la ponctuation reste dans la phrase, seuls les espaces disparaissent.
+- **Limites connues** : `M. Dupont` ou `p. ex. Le` seraient coupés à tort. Ces cas sont absents de mon corpus. Des bibliothèques comme NLTK ou spaCy feraient mieux, mais ce sont des dépendances lourdes, non justifiées ici.
+
+**Regroupement glouton (*greedy*)**
+- **Définition** : on ajoute les phrases une à une **tant que ça rentre**. Dès que la suivante ferait dépasser `chunk_size`, on ferme le morceau.
+- **Pourquoi « glouton »** : on prend la meilleure décision locale, sans revenir en arrière. C'est simple et suffisant ici.
+- **Exemple** : phrases de 30, 30, 30 avec `size=70` → 30 + 1 + 30 = **61** ✅, puis 61 + 1 + 30 = **92** ❌ → `[A B]`, `[C]`.
+
+**Chevauchement par phrases entières**
+- On répète les **dernières phrases** du morceau précédent, tant que leur longueur totale reste ≤ `overlap`.
+- **Exemple** : `overlap=35`, dernière phrase de 30 → elle est répétée. Les deux dernières (61) dépassent 35 → seule la dernière l'est.
+- Si la dernière phrase dépasse `overlap`, **rien** n'est répété : on préfère pas de chevauchement plutôt qu'une phrase coupée.
+- Si le chevauchement + la nouvelle phrase dépassent `size`, on retire des phrases reprises (la plus ancienne d'abord).
+
+**Repli (*fallback*) sur « fixed »**
+- Une phrase plus longue que `chunk_size` ne peut entrer dans aucun morceau. Elle est donc coupée en fenêtres fixes.
+- C'est le **seul** cas où « sentence » coupe une phrase. Sur mon corpus, la phrase la plus longue fait 221 caractères (< 800) : le repli n'est jamais utilisé.
+
+**Table de stratégies (dictionnaire de fonctions)**
+- En Python, une fonction est une valeur comme une autre : on peut la ranger dans un dictionnaire.
+- `SPLITTERS = {"fixed": split_text_fixed, "sentence": split_text_sentence}`, puis `SPLITTERS[strategy](text, size, overlap)`.
+- **Avantage** : ajouter une stratégie = ajouter **une ligne**, sans chaîne de `if/elif`.
+- **`Callable[[str, int, int], list[str]]`** : type « fonction qui prend (str, int, int) et renvoie une liste de str ».
+
+**Remplacement d'une fonction existante (refactorisation)**
+- `chunk_page_fixed` (3.3) devient `chunk_page(..., strategy="fixed")`. Garder les deux aurait dupliqué la création des `Chunk`.
+- Les anciens tests, adaptés, prouvent que « fixed » se comporte toujours pareil : c'est de la **non-régression**.
+
+### À retenir
+
+- « sentence » = des phrases entières, regroupées jusqu'à `size`, avec un chevauchement de phrases entières ≤ `overlap`.
+- Une regex avec *lookbehind* et *lookahead* coupe aux bons endroits sans perdre la ponctuation.
+- Même nombre de chunks que « fixed » (15) sur mon corpus, mais des frontières propres. La comparaison détaillée se fera en 3.5.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1467,9 +1567,9 @@ python -m pytest tests/unit/test_chunker.py -v
 | `tests/unit/test_models.py` | `app/models.py` | 12 | 2.2, 3.2 | [voir 2.2](#étape-22--structure-de-données-dune-page), [voir 3.2](#étape-32--structure-de-données-chunk) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
 | `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
-| `tests/unit/test_chunker.py` | `app/ingestion/chunker.py` | 13 | 3.3 | [voir](#étape-33--chunker-stratégie-fixed) |
+| `tests/unit/test_chunker.py` | `app/ingestion/chunker.py` | 25 | 3.3, 3.4 | [voir 3.3](#étape-33--chunker-stratégie-fixed), [voir 3.4](#étape-34--chunker-stratégie-sentence) |
 | `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
-| **Total** | | **62** (60 unitaires + 2 d'intégration) | | |
+| **Total** | | **74** (72 unitaires + 2 d'intégration) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1488,6 +1588,7 @@ python -m pytest tests/unit/test_chunker.py -v
 | 2026-10-11 | 3.1 | `python -m pytest tests -q` | 43 passed in 0.52s |
 | 2026-10-12 | 3.2 | `python -m pytest tests -q` | 49 passed in 0.50s |
 | 2026-10-15 | 3.3 | `python -m pytest tests -q` (après correction RUF007) | 62 passed in 0.52s |
+| 2026-10-15 | 3.4 | `python -m pytest tests -q` | 74 passed in 0.51s |
 
 ## Lire un résultat pytest
 
@@ -1607,6 +1708,11 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Programmation défensive | Une fonction vérifie elle-même ses entrées au lieu de faire confiance à l'appelant | 3.3 |
 | `parametrize` | Exécute un même test avec plusieurs jeux de valeurs | 3.3 |
 | `itertools.pairwise` | Parcourt les éléments voisins deux à deux : (a, b), (b, c)… | 3.3 |
+| Sentence splitting | Découper un texte en phrases | 3.4 |
+| Lookbehind / lookahead | Regex qui regarde avant / après sans consommer de caractères | 3.4 |
+| Algorithme glouton | Prend la meilleure décision locale sans revenir en arrière | 3.4 |
+| Fallback (repli) | Solution de secours quand la méthode principale ne s'applique pas | 3.4 |
+| `Callable` | Type « fonction » (paramètres → retour) | 3.4 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

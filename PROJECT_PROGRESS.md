@@ -11,8 +11,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | 3.1 | Principes du chunking + paramètres dans la configuration | ✅ Validée (2026-10-12) |
 | 3.2 | Structure de données `Chunk` (`app/models.py`) | ✅ Validée (2026-10-15) |
 | 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | ✅ Validée (2026-10-15) |
-| 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | 🔎 En cours |
-| 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) | ⬜ À faire |
+| 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | ✅ Validée (2026-10-15) |
+| 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) | 🔎 En cours |
 
 ## Phase 2 — Ingestion
 
@@ -75,6 +75,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_models.py` (modifié) | 3.2 | + 6 tests sur `Chunk` (12 au total) |
 | `app/ingestion/chunker.py` | 3.3 | `split_text_fixed` (texte → fenêtres), `chunk_page_fixed` (page → `Chunk`), `_validate_chunk_params` |
 | `tests/unit/test_chunker.py` | 3.3 | 13 tests (dont 4 cas paramétrés de paramètres invalides) |
+| `app/ingestion/chunker.py` (modifié) | 3.4 | + `split_sentences`, `split_text_sentence`, `_overlap_tail`, `_joined_length` ; table `SPLITTERS` ; `chunk_page_fixed` remplacé par `chunk_page(..., strategy)` ; + `chunk_pages` |
+| `tests/unit/test_chunker.py` (modifié) | 3.4 | 25 tests : anciens tests adaptés à `chunk_page(strategy="fixed")`, + 12 nouveaux |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -106,6 +108,14 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **`Chunk`** : des champs « à plat » (`document_id`, `source`, `page_number`, `chunk_index`, `text`), faciles à stocker comme métadonnées dans ChromaDB. `chunk_id` = `"<document_id>-p<page>-c<index>"` est une **propriété calculée**, donc toujours cohérente avec les champs. Comme il est déterministe, réindexer le même document produira les mêmes ids (dédoublonnage en Phase 5). `chunk_index` commence à 0 (identifiant interne), `page_number` à 1 (lu par les humains).
 - **Chunker indépendant de la configuration** : `chunk_size` et `chunk_overlap` sont passés en paramètres explicites, et le chunker n'appelle pas `get_settings()`. Il revalide quand même ses paramètres (`_validate_chunk_params`), parce qu'un pas ≤ 0 provoquerait une boucle infinie si on l'appelait sans passer par `Settings`.
 - **Stratégie « fixed »** : les fenêtres sont des tranches brutes (`text[start:end]`), sans `strip()`, ce qui permet de vérifier exactement la formule et le chevauchement. Une fenêtre faite uniquement d'espaces est ignorée, et la numérotation reste continue.
+- **Stratégie « sentence »** :
+  - découpage en phrases par une expression régulière : on coupe après `. ! ? …` suivi d'espaces puis d'une majuscule, sauf après « chiffre + point » (numéros de titre), et à chaque saut de ligne ;
+  - les phrases sont regroupées de façon **gloutonne** jusqu'à `chunk_size` ;
+  - le chevauchement se fait par **phrases entières** dans la limite de `chunk_overlap`, et il est réduit si nécessaire pour respecter `chunk_size` ;
+  - une phrase plus longue que `chunk_size` est coupée par « fixed », seul cas où une phrase est coupée ;
+  - les phrases sont recollées avec une espace, donc un titre se retrouve collé à la phrase qui le suit.
+  Pas de NLTK ni de spaCy : une dépendance lourde n'est pas justifiée pour des textes propres.
+- **`chunk_page(page, size, overlap, strategy)`** remplace `chunk_page_fixed` (3.3) : un seul point d'entrée et une table `SPLITTERS` (nom → fonction). Le type `ChunkStrategy` est importé depuis `config.py`, pour n'être défini qu'une fois.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -232,6 +242,14 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - `python -m pytest tests/unit/test_chunker.py -v` : 13 passed ; `python -m pytest tests -q` : **62 passed**
 - Sur les vrais PDF (800 / 150) : **15 chunks** au total. Les pages de 2 386, 2 315 et 2 454 caractères donnent 4 chunks chacune (derniers : 436, 365, 504 caractères), et chaque page 2 donne 1 chunk. C'est conforme à la formule $\lceil (L-o)/(s-o) \rceil$.
 - Limite observée : la fin du chunk `49289fd3ade5e236-p1-c0` est `"...Il charge les fic"`, coupé au milieu d'un mot. C'est attendu avec « fixed », et c'est justement ce que la stratégie « sentence » (3.4) doit corriger.
+- Commit `f5cae44`
+
+Étape 3.4, vérifiée le 2026-10-15 :
+
+- `ruff check` : All checks passed (après `ruff format`)
+- `python -m pytest tests/unit/test_chunker.py -v` : 25 passed ; `python -m pytest tests -q` : **74 passed**
+- Sur les vrais PDF (800 / 150, « sentence ») : **15 chunks**, comme avec « fixed ». Tailles : 382 à 794 caractères ; les grandes pages font 24 à 27 phrases. La phrase la plus longue fait 221 caractères, donc le repli sur « fixed » n'est jamais utilisé sur ce corpus.
+- Toutes les frontières tombent en fin de phrase : c0 finit par `"...prépare les documents."` et c1 commence par `"2. Les deux pipelines fondamentaux Le pipeline d'ingestion..."` (chevauchement = titre + 1 phrase).
 
 ## Données de travail
 
@@ -247,4 +265,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-3.4 — Chunker, stratégie « sentence » (après validation de 3.3).
+3.5 — Comparaison des stratégies sur les vrais PDF (après validation de 3.4).
