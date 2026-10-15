@@ -22,6 +22,7 @@
 - [Phase 3 — Chunking](#phase-3--chunking)
   - [3.1 — Principes du chunking et paramètres](#étape-31--principes-du-chunking-et-paramètres)
   - [3.2 — Structure de données Chunk](#étape-32--structure-de-données-chunk)
+  - [3.3 — Chunker « fixed »](#étape-33--chunker-stratégie-fixed)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1337,6 +1338,95 @@ python -m pytest tests/unit/test_models.py -v
 
 ---
 
+## Étape 3.3 — Chunker, stratégie « fixed »
+
+> Statut : validée le 2026-10-15
+
+### Ce que j'ai fait
+
+- Créé `app/ingestion/chunker.py` :
+  - `split_text_fixed(text, chunk_size, chunk_overlap)` : texte → liste de fenêtres (chaînes) ;
+  - `chunk_page_fixed(page, chunk_size, chunk_overlap)` : `DocumentPage` → liste de `Chunk` avec leurs métadonnées ;
+  - `_validate_chunk_params(...)` : refuse les paramètres qui provoqueraient une boucle infinie.
+- Créé `tests/unit/test_chunker.py` (13 tests).
+- Corrigé une remarque Ruff : `RUF007`, qui conseille `itertools.pairwise()` plutôt que `zip(pieces, pieces[1:])`.
+- Testé sur mes vrais PDF (800 / 150) :
+  ```
+  01_introduction_rag.pdf p.1: 2386 car. -> 4 chunks, tailles [800, 800, 800, 436]
+  01_introduction_rag.pdf p.2: 542 car. -> 1 chunks, tailles [542]
+  02_embeddings_recherche_vectorielle.pdf p.1: 2315 car. -> 4 chunks, tailles [800, 800, 800, 365]
+  02_embeddings_recherche_vectorielle.pdf p.2: 536 car. -> 1 chunks, tailles [536]
+  03_evaluation_rag.pdf p.1: 2454 car. -> 4 chunks, tailles [800, 800, 800, 504]
+  03_evaluation_rag.pdf p.2: 794 car. -> 1 chunks, tailles [794]
+  TOTAL 15
+  FIN c0  : "ipeline d'ingestion prépare les documents. Il charge les fic"
+  DEBUT c1: ' passages et vérifier que la réponse les respecte.\n2. Les de'
+  ```
+  → Le mot « fichiers » est **coupé en deux** : c'est la limite de la stratégie « fixed ».
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_chunker.py` · **Module testé** : `app/ingestion/chunker.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_short_text_gives_a_single_piece` | Texte < `chunk_size` → 1 morceau identique | Les pages courtes ne sont pas découpées inutilement |
+| `test_empty_text_gives_no_piece` | `""` → `[]` | Pas de morceau vide |
+| `test_worked_example_from_the_notes` | L=1000, s=400, o=100 → `[0,400)`, `[300,700)`, `[600,1000)` | Le code fait exactement ce que dit l'exemple de 3.1 |
+| `test_number_of_pieces_matches_the_formula_on_a_real_page_size` | L=2386 → 4 morceaux, le dernier de 436 | Vérifie la formule sur la taille de ma vraie page |
+| `test_consecutive_pieces_share_exactly_the_overlap` | Fin de l'un = début du suivant (3 caractères) | Le chevauchement est réel |
+| `test_without_overlap_pieces_rebuild_the_text` | overlap=0 → recoller les morceaux redonne le texte | Rien n'est perdu ni dupliqué |
+| `test_no_piece_exceeds_chunk_size` | Toutes les longueurs ≤ 300 | La taille maximale est respectée |
+| `test_invalid_parameters_are_rejected` (×4) | size=0, overlap<0, overlap=size, overlap>size → `ValueError` | Évite une boucle infinie |
+| `test_chunks_keep_the_page_origin_and_are_numbered` | Document, source et page recopiés ; index 0,1,2 ; ids `abc123-p2-c0`… | Citations possibles |
+| `test_blank_pieces_are_skipped_without_gap_in_numbering` | Une fenêtre d'espaces est ignorée ; index 0,1 sans trou | Pas de chunk vide dans l'index |
+
+**Techniques utilisées :**
+- **`@pytest.mark.parametrize`** : un seul test exécuté avec plusieurs jeux de valeurs (4 cas invalides). pytest les affiche séparément, par exemple `[100-100-chunk_overlap]`.
+- **Texte « traçable »** : `"0"*100 + "1"*100 + ...` ou l'alphabet. On voit tout de suite quelle partie du texte se trouve dans quel morceau.
+- **Propriétés** plutôt que valeurs exactes : « aucun morceau > size », « recoller = texte d'origine ». Ces vérifications restent vraies quelle que soit l'entrée.
+
+**Lancer ces tests :**
+```powershell
+python -m pytest tests/unit/test_chunker.py -v
+```
+
+**Résultat réel (2026-10-15)** : 13 passed dans ce fichier (62 au total)
+
+### Notions apprises
+
+**Fenêtre glissante (*sliding window*)**
+- **Définition** : une « fenêtre » de taille fixe qu'on fait glisser sur le texte, d'un **pas** constant.
+- **Dans mon code** : la fenêtre est `text[start:start + chunk_size]`, et `start` avance de `step = chunk_size - chunk_overlap`.
+- **Condition d'arrêt** : on s'arrête dès qu'une fenêtre atteint la fin du texte (`end >= len(text)`). Sans ce test, on créerait une fenêtre de plus, entièrement contenue dans la précédente.
+
+**Slicing Python et bornes**
+- `text[start:end]` prend les caractères de `start` (inclus) à `end` (exclu).
+- Si `end` dépasse la longueur du texte, Python s'arrête simplement à la fin : pas d'`IndexError`. Le dernier morceau peut donc être plus court.
+
+**Boucle infinie et validation défensive**
+- Si `overlap >= size`, le pas vaut 0 ou moins : `start` n'avance jamais, et le programme se bloque.
+- `Settings` refuse déjà ce cas, mais le chunker peut être appelé **sans** `Settings` (tests, scripts). Il revérifie donc lui-même ses paramètres. C'est de la **programmation défensive** : une fonction ne fait pas confiance à son appelant pour éviter un bug grave.
+
+**Paramètres explicites plutôt que configuration globale**
+- `chunk_page_fixed(page, chunk_size, chunk_overlap)` ne lit pas `get_settings()`.
+- **Pourquoi** : la fonction est testable avec n'importe quelles valeurs, sans `monkeypatch`, et son comportement se lit dans sa signature. C'est le **couplage faible** (section 5.2 de CLAUDE.md). C'est l'appelant (le pipeline, en Phase 8) qui lira la configuration.
+
+**Limite de la stratégie « fixed »**
+- Elle coupe **n'importe où** : au milieu d'un mot (`fic|hiers`) ou d'une phrase.
+- **Conséquence pour le RAG** : un chunk qui commence par « passages et vérifier… » a perdu le début de son idée. Son embedding sera moins précis, et le LLM recevra des phrases tronquées.
+- Le chevauchement **limite** ce problème (la phrase coupée apparaît entière dans l'un des deux chunks si elle fait moins de 150 caractères), mais ne le **supprime** pas.
+- C'est pour cela que « fixed » sert de **référence naïve**, et que « sentence » (3.4) sera la stratégie par défaut.
+
+### À retenir
+
+- Fenêtre glissante : taille `s`, pas `s - o`, arrêt dès que la fin du texte est atteinte.
+- Mes vrais PDF donnent **15 chunks** avec 800 / 150, comme le prévoyait la formule.
+- Valider ses paramètres pour rendre une boucle infinie impossible.
+- « fixed » est simple et prévisible, mais coupe les mots : c'est une référence de comparaison, pas la stratégie finale.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1377,8 +1467,9 @@ python -m pytest tests/unit/test_models.py -v
 | `tests/unit/test_models.py` | `app/models.py` | 12 | 2.2, 3.2 | [voir 2.2](#étape-22--structure-de-données-dune-page), [voir 3.2](#étape-32--structure-de-données-chunk) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
 | `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
+| `tests/unit/test_chunker.py` | `app/ingestion/chunker.py` | 13 | 3.3 | [voir](#étape-33--chunker-stratégie-fixed) |
 | `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
-| **Total** | | **49** (47 unitaires + 2 d'intégration) | | |
+| **Total** | | **62** (60 unitaires + 2 d'intégration) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1396,6 +1487,7 @@ python -m pytest tests/unit/test_models.py -v
 | 2026-10-11 | 2.5 | après correction du PDF de test | 39 passed in 0.49s |
 | 2026-10-11 | 3.1 | `python -m pytest tests -q` | 43 passed in 0.52s |
 | 2026-10-12 | 3.2 | `python -m pytest tests -q` | 49 passed in 0.50s |
+| 2026-10-15 | 3.3 | `python -m pytest tests -q` (après correction RUF007) | 62 passed in 0.52s |
 
 ## Lire un résultat pytest
 
@@ -1511,6 +1603,10 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Modèle open source | Modèle dont les poids sont publiés et utilisables gratuitement | 1.1 |
 | Quantification | Stockage des poids avec moins de bits (ex. 4 bits) pour réduire la mémoire nécessaire | 1.1 |
 | VRAM | Mémoire de la carte graphique ; limite la taille du modèle que le GPU peut charger | 1.1 |
+| Fenêtre glissante | Fenêtre de taille fixe déplacée sur le texte d'un pas constant | 3.3 |
+| Programmation défensive | Une fonction vérifie elle-même ses entrées au lieu de faire confiance à l'appelant | 3.3 |
+| `parametrize` | Exécute un même test avec plusieurs jeux de valeurs | 3.3 |
+| `itertools.pairwise` | Parcourt les éléments voisins deux à deux : (a, b), (b, c)… | 3.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

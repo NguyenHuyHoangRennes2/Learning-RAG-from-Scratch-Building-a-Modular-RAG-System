@@ -10,8 +10,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 |---|---|---|
 | 3.1 | Principes du chunking + paramètres dans la configuration | ✅ Validée (2026-10-12) |
 | 3.2 | Structure de données `Chunk` (`app/models.py`) | ✅ Validée (2026-10-15) |
-| 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | 🔎 En cours |
-| 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | ⬜ À faire |
+| 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | ✅ Validée (2026-10-15) |
+| 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | 🔎 En cours |
 | 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) | ⬜ À faire |
 
 ## Phase 2 — Ingestion
@@ -73,6 +73,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_config.py` (modifié) | 3.1 | + 4 tests sur les paramètres de chunking (8 au total) |
 | `app/models.py` (modifié) | 3.2 | + dataclass `Chunk` (propriété calculée `chunk_id`) ; validation commune extraite dans `_validate_origin()` |
 | `tests/unit/test_models.py` (modifié) | 3.2 | + 6 tests sur `Chunk` (12 au total) |
+| `app/ingestion/chunker.py` | 3.3 | `split_text_fixed` (texte → fenêtres), `chunk_page_fixed` (page → `Chunk`), `_validate_chunk_params` |
+| `tests/unit/test_chunker.py` | 3.3 | 13 tests (dont 4 cas paramétrés de paramètres invalides) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -102,6 +104,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **Chunking — valeurs par défaut** : `chunk_size=800`, `chunk_overlap=150` (environ 19 %), `chunk_strategy="sentence"`. Un chunk ne traverse jamais deux pages, pour que la citation de page reste exacte.
 - **Deux stratégies** implémentées pour pouvoir les **comparer** : « fixed » (référence naïve) et « sentence » (par défaut).
 - **`Chunk`** : des champs « à plat » (`document_id`, `source`, `page_number`, `chunk_index`, `text`), faciles à stocker comme métadonnées dans ChromaDB. `chunk_id` = `"<document_id>-p<page>-c<index>"` est une **propriété calculée**, donc toujours cohérente avec les champs. Comme il est déterministe, réindexer le même document produira les mêmes ids (dédoublonnage en Phase 5). `chunk_index` commence à 0 (identifiant interne), `page_number` à 1 (lu par les humains).
+- **Chunker indépendant de la configuration** : `chunk_size` et `chunk_overlap` sont passés en paramètres explicites, et le chunker n'appelle pas `get_settings()`. Il revalide quand même ses paramètres (`_validate_chunk_params`), parce qu'un pas ≤ 0 provoquerait une boucle infinie si on l'appelait sans passer par `Settings`.
+- **Stratégie « fixed »** : les fenêtres sont des tranches brutes (`text[start:end]`), sans `strip()`, ce qui permet de vérifier exactement la formule et le chevauchement. Une fenêtre faite uniquement d'espaces est ignorée, et la numérotation reste continue.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -220,6 +224,14 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - `python -m pytest tests/unit/test_models.py -v` : 12 passed (les 6 anciens tests de `DocumentPage` passent toujours après la factorisation)
 - `python -m pytest tests -q` : **49 passed** ; `ruff check` : OK
 - Démonstration : `Chunk('49289fd3ade5e236', '01_introduction_rag.pdf', 1, 0, ...).chunk_id` → `49289fd3ade5e236-p1-c0`
+- Commit `cd6289b` (pas encore poussé sur GitHub)
+
+Étape 3.3, vérifiée le 2026-10-15 :
+
+- `ruff check` : 1 remarque `RUF007` (`zip(pieces, pieces[1:])` → `itertools.pairwise`), corrigée ; ensuite All checks passed ; `ruff format --check` : 24 fichiers déjà formatés
+- `python -m pytest tests/unit/test_chunker.py -v` : 13 passed ; `python -m pytest tests -q` : **62 passed**
+- Sur les vrais PDF (800 / 150) : **15 chunks** au total. Les pages de 2 386, 2 315 et 2 454 caractères donnent 4 chunks chacune (derniers : 436, 365, 504 caractères), et chaque page 2 donne 1 chunk. C'est conforme à la formule $\lceil (L-o)/(s-o) \rceil$.
+- Limite observée : la fin du chunk `49289fd3ade5e236-p1-c0` est `"...Il charge les fic"`, coupé au milieu d'un mot. C'est attendu avec « fixed », et c'est justement ce que la stratégie « sentence » (3.4) doit corriger.
 
 ## Données de travail
 
@@ -235,4 +247,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-3.3 — Chunker, stratégie « fixed » (en cours).
+3.4 — Chunker, stratégie « sentence » (après validation de 3.3).
