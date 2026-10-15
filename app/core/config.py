@@ -67,6 +67,10 @@ class Settings(BaseSettings):
     # Nombre de textes vectorisés en une seule passe du modèle
     embedding_batch_size: int = Field(default=32, gt=0)
 
+    # --- Base vectorielle (Phase 5) ---
+    # Nom de la collection ChromaDB (3 à 512 caractères : lettres, chiffres, . _ -)
+    chroma_collection_name: str = "rag_chunks"
+
     @model_validator(mode="after")
     def _check_chunk_overlap(self) -> "Settings":
         """Vérifie une règle qui porte sur DEUX champs : overlap < size."""

@@ -91,3 +91,21 @@ class Chunk:
         """Identifiant unique et stable du chunk, ex. "49289fd3ade5e236-p1-c0"."""
         # Calculé à partir des autres champs : impossible qu'il soit incohérent avec eux
         return f"{self.document_id}-p{self.page_number}-c{self.chunk_index}"
+
+    @property
+    def citation(self) -> str:
+        """Référence lisible par un humain, ex. "01_introduction_rag.pdf, p. 1"."""
+        # Nom du fichier et numéro de page : ce que l'utilisateur peut vérifier lui-même
+        return f"{self.source}, p. {self.page_number}"
+
+
+# frozen=True : un résultat de recherche ne doit pas être modifié après coup
+@dataclass(frozen=True)
+class SearchResult:
+    """Un chunk retrouvé pour une question, avec son score de similarité."""
+
+    # Le chunk retrouvé (texte + origine, pour la citation)
+    chunk: Chunk
+
+    # Similarité cosinus avec la question : plus c'est grand, plus c'est proche (max 1)
+    score: float

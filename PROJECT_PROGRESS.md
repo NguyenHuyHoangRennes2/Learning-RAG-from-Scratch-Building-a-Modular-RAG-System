@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 5 — Base vectorielle (ChromaDB)
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 5.1 | `SearchResult` et `Chunk.citation` (`app/models.py`), nom de collection dans la configuration | ✅ Terminée (2026-10-15, mode autonome) |
+| 5.2 | `ChromaStore` (`app/vectorstore/chroma_store.py`) : upsert, recherche, suppression, garde-fou « même modèle » | ✅ Terminée (2026-10-15, mode autonome) |
+| 5.3 | Flux d'indexation `IngestionPipeline` (`app/rag/pipeline.py`) + `scripts/build_index.py` | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 5 terminée le 2026-10-15.**
+
 ## Phase 4 — Embeddings
 
 | Étape | Titre | Statut |
@@ -101,6 +111,15 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `pytest.ini` | 4.3 | Marqueur `slow` ; les tests lents sont exclus par défaut (`-m "not slow"`) |
 | `tests/integration/test_embeddings_real_model.py` | 4.3 | 2 tests `slow` avec le vrai modèle (dimension, norme, pertinence) |
 | `scripts/inspect_embeddings.py` | 4.3 | Mesures : tokens par chunk, troncature, vitesse, similarités |
+| `app/models.py` (modifié) | 5.1 | + `Chunk.citation` (« fichier.pdf, p. N ») ; + dataclass `SearchResult(chunk, score)` |
+| `app/core/config.py`, `.env.example` (modifiés) | 5.1 | + `chroma_collection_name="rag_chunks"` |
+| `tests/unit/test_models.py` (modifié) | 5.1 | + 2 tests (14 au total) |
+| `app/vectorstore/chroma_store.py` | 5.2 | `ChromaStore` : `add_chunks` (upsert par lots), `search`, `count`, `has_document`, `delete_document`, `list_documents` ; `EmbeddingModelMismatchError` |
+| `tests/integration/test_chroma_store.py` | 5.2 | 9 tests avec une vraie ChromaDB dans `tmp_path` |
+| `app/rag/pipeline.py` | 5.3 | `IngestionPipeline` (`ingest_pdf`, `ingest_directory`), `IngestionReport` |
+| `scripts/build_index.py` | 5.3 | Point d'entrée : indexe `data/raw/` (option `--replace`) |
+| `tests/fakes.py` | 5.3 | `KeywordEncoder` : faux modèle d'embeddings par mots-clés, partagé par les tests |
+| `tests/integration/test_ingestion_to_index.py` | 5.3 | 5 tests : dossier, doublons, `--replace`, recherche, dossier absent |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -147,6 +166,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **Vecteurs normalisés** (`normalize_embeddings=True`) : la norme vaut 1, donc cosinus = produit scalaire. **Métrique de similarité : cosinus.**
 - **Chargement paresseux** : le modèle (15 s) n'est chargé qu'au premier usage. **Injection** d'un encodeur (`encoder=`), qui permet des tests unitaires instantanés avec un faux encodeur. Le `Protocol` `TextEncoder` décrit ce dont on a besoin, sans dépendre de la classe `SentenceTransformer`.
 - **Tests lents séparés** : ceux qui chargent le vrai modèle sont marqués `slow` et exclus par défaut (`pytest.ini`). On les lance avec `python -m pytest -m slow`.
+- **ChromaDB** (5.2) :
+  - client **persistant** (`storage/chroma/`) et une collection `rag_chunks` en espace **cosinus** (`configuration={"hnsw": {"space": "cosine"}}`) ;
+  - `embedding_function=None`, car c'est notre `EmbeddingModel` qui calcule les vecteurs (sinon Chroma téléchargerait son propre modèle) ;
+  - ChromaDB renvoie une **distance** $d = 1 - \cos$, convertie en **score** $s = 1 - d$ (plus grand = plus proche) ;
+  - le nom du modèle d'embeddings est enregistré dans les métadonnées de la collection, et la rouvrir avec un autre modèle lève `EmbeddingModelMismatchError`. C'est la règle 6.3 de CLAUDE.md, vérifiée par le code.
+- **Dédoublonnage** (5.3) : à deux niveaux.
+  1. Par document : un `document_id` (hash du contenu) déjà présent est **sauté**, sans rien recalculer.
+  2. Par chunk : `upsert` sur des `chunk_id` déterministes.
+  `--replace` **supprime** d'abord les chunks du document : avec d'autres paramètres de chunking, d'anciens `chunk_id` resteraient sinon orphelins.
+- **`app/rag/pipeline.py`** contient l'orchestration de l'ingestion (règle 5.1 de CLAUDE.md : `rag/` orchestre). La partie « question → réponse » y sera ajoutée en Phase 8.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -323,6 +352,16 @@ Phase 4, vérifiée le 2026-10-15 :
   - vectorisation : 0,60 s pour 14 chunks (**43 ms/chunk** sur CPU) ;
   - question « Pourquoi faut-il normaliser les vecteurs ? » : les 3 meilleurs chunks viennent tous du document 2 (embeddings), avec des scores de 0,833, 0,830 et 0,826 ; le moins proche obtient 0,784.
 - Constat : les scores cosinus de E5 sont **compressés** (environ 0,78 à 0,84) : même un chunk hors sujet obtient plus de 0,78. Un seuil absolu de « pertinence » devra donc être **calibré** sur nos données (Phase 8), et non fixé à 0,5 par intuition.
+- Commit `2ee3559`
+
+Phase 5, vérifiée le 2026-10-15 :
+
+- Exploration de l'API ChromaDB 1.5.9 : un nom de collection de moins de 3 caractères est refusé (`InvalidArgumentError`) ; `query` renvoie des listes de listes (une par question) ; la distance cosinus entre (1, 0) et (1, 0.1) vaut 0.005.
+- **Incident** : en ajoutant 2 tests à `test_models.py` avec PowerShell 5.1 (`Get-Content`/`Set-Content`), le fichier a été relu en ANSI et tous les accents ont été abîmés (`Ã©`). Détecté avec `git diff`, fichier restauré (`git checkout`), puis modification refaite avec l'outil d'édition. Leçon : ne pas modifier de fichiers UTF-8 avec les cmdlets de PowerShell 5.1.
+- `ruff check` : OK ; `python -m pytest -q` : **110 passed, 2 deselected** (2,58 s)
+- `python -m scripts.build_index` (vrais PDF) : 3 documents indexés (5 + 4 + 5 = **14 chunks**) en **17,5 s**, chargement du modèle compris.
+- 2e exécution : 3 × `skipped` (« déjà indexé ») en **0,0 s**. Le modèle n'est même pas chargé (chargement paresseux), et l'index contient toujours 14 chunks.
+- `storage/chroma/` contient `chroma.sqlite3` et un dossier d'index HNSW ; il est ignoré par Git.
 
 ## Données de travail
 
@@ -339,4 +378,4 @@ Phase 4, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 5 — Base vectorielle ChromaDB.
+Phase 6 — Recherche sémantique (retriever + évaluation de la recherche).

@@ -7,7 +7,7 @@ from dataclasses import FrozenInstanceError, replace
 import pytest
 
 # Les classes que l'on teste
-from app.models import Chunk, DocumentPage
+from app.models import Chunk, DocumentPage, SearchResult
 
 
 def make_page(**overrides: object) -> DocumentPage:
@@ -149,3 +149,22 @@ def test_chunk_is_immutable() -> None:
     with pytest.raises(FrozenInstanceError):
         # Tentative de modification interdite
         chunk.text = "autre texte"  # type: ignore[misc]
+
+
+def test_chunk_citation_is_human_readable() -> None:
+    # Chunk de la page 2 de "cours.pdf"
+    chunk = make_chunk()
+
+    # Citation lisible : nom du fichier et numéro de page
+    assert chunk.citation == "cours.pdf, p. 2"
+
+
+# --- SearchResult ---
+
+
+def test_search_result_holds_chunk_and_score() -> None:
+    # Un résultat de recherche associe un chunk et son score
+    result = SearchResult(chunk=make_chunk(), score=0.87)
+
+    # Les deux informations sont accessibles
+    assert (result.chunk.chunk_id, result.score) == ("abc123-p2-c0", 0.87)

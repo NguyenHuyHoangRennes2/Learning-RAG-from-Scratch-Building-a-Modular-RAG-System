@@ -26,6 +26,7 @@
   - [3.4 — Chunker « sentence »](#étape-34--chunker-stratégie-sentence)
   - [3.5 — Comparaison des stratégies](#étape-35--comparaison-des-stratégies)
 - [Phase 4 — Embeddings](#phase-4--embeddings)
+- [Phase 5 — Base vectorielle (ChromaDB)](#phase-5--base-vectorielle-chromadb)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1808,6 +1809,153 @@ python -m pytest tests/integration -v
 
 ---
 
+# Phase 5 — Base vectorielle (ChromaDB)
+
+**Objectif de la phase** : **stocker durablement** les chunks et leurs vecteurs, puis retrouver rapidement les plus proches d'une question, sans recalculer les embeddings à chaque lancement.
+
+> Phase réalisée en **mode autonome** le 2026-10-15.
+
+| Étape | Titre |
+|---|---|
+| 5.1 | `SearchResult`, `Chunk.citation`, nom de collection dans la configuration |
+| 5.2 | `ChromaStore` : stockage, recherche, suppression, garde-fou « même modèle » |
+| 5.3 | Flux d'indexation `IngestionPipeline` + `scripts/build_index.py` |
+
+## Étape 5.1 — Structures de données de la recherche
+
+### Ce qui a été fait
+
+- `app/models.py` :
+  - `Chunk.citation` : propriété calculée qui renvoie `"01_introduction_rag.pdf, p. 1"` ;
+  - `SearchResult(chunk, score)` : un chunk retrouvé et sa similarité avec la question.
+- `config.py` : `chroma_collection_name = "rag_chunks"`.
+- 2 tests ajoutés dans `tests/unit/test_models.py` (`test_chunk_citation_is_human_readable`, `test_search_result_holds_chunk_and_score`).
+
+### Notions apprises
+
+- **Pourquoi `SearchResult` dans `models.py`** : il sera produit par `vectorstore`, transmis par `retrieval` et lu par `generation`. Le placer dans le module commun évite que ces packages s'importent entre eux.
+
+## Étape 5.2 — `ChromaStore`
+
+### Ce qui a été fait
+
+- Créé `app/vectorstore/chroma_store.py` :
+
+  | Méthode | Rôle |
+  |---|---|
+  | `ChromaStore(persist_dir, collection_name, embedding_model_name)` | Ouvre ou crée la collection (espace cosinus) |
+  | `add_chunks(chunks, embeddings)` | `upsert` par lots de 1 000 |
+  | `search(query_embedding, top_k)` | Les `top_k` plus proches, avec leur score |
+  | `count()` | Nombre de chunks stockés |
+  | `has_document(document_id)` | Document déjà indexé ? |
+  | `delete_document(document_id)` | Supprime tous ses chunks |
+  | `list_documents()` | Documents indexés (id, fichier, nombre de chunks) |
+
+- Créé `tests/integration/test_chroma_store.py` (9 tests) avec une **vraie** ChromaDB dans `tmp_path` et des vecteurs 3D écrits à la main.
+
+### Tests (pytest)
+
+| Test | Ce qu'il vérifie |
+|---|---|
+| `test_chunks_are_stored` | 3 chunks ajoutés → `count() == 3` |
+| `test_reindexing_the_same_chunks_does_not_duplicate` | Réindexer → toujours 3 (upsert) |
+| `test_search_returns_closest_first_with_cosine_score` | Ordre correct ; score $= 1/\sqrt{1{,}25} \approx 0{,}894$ ; chunk reconstruit à l'identique |
+| `test_top_k_larger_than_collection_returns_everything` | `top_k=10` avec 3 chunks → 3 résultats, sans erreur |
+| `test_empty_store_returns_no_result` | Base vide → `[]` |
+| `test_data_persists_on_disk` | On rouvre la base : les données sont toujours là |
+| `test_other_embedding_model_is_rejected` | Autre modèle → `EmbeddingModelMismatchError` |
+| `test_documents_can_be_listed_checked_and_deleted` | `list_documents`, `has_document`, `delete_document` |
+| `test_invalid_arguments_are_rejected` | Nombres de chunks et de vecteurs différents ; `top_k=0` |
+
+**Calcul du score attendu** (test 3) : la question vaut $(1;\ 0{,}5;\ 0)$ et sa norme $\sqrt{1 + 0{,}25} = \sqrt{1{,}25}$. Le chunk vaut $(1, 0, 0)$. Le produit scalaire avec la question normalisée donne $1/\sqrt{1{,}25} \approx 0{,}894$.
+
+### Notions apprises
+
+**Base vectorielle**
+- **Définition** : une base de données qui stocke des **vecteurs** (avec leur texte et leurs métadonnées) et sait trouver rapidement les **plus proches voisins** d'un vecteur donné.
+- **Pourquoi pas une simple liste Python** : avec 14 chunks, une boucle suffirait. Avec 1 million, comparer la question à chaque vecteur serait trop lent. Il faut aussi **persister** les données, pour ne pas tout recalculer à chaque démarrage.
+
+**Index HNSW (*Hierarchical Navigable Small World*)**
+- **Intuition** : un graphe où chaque vecteur est relié à ses voisins, sur plusieurs « étages ». Les étages du haut ont peu de liens longs, comme des autoroutes ; ceux du bas ont beaucoup de liens courts, comme des rues. On descend du haut vers le bas en se rapprochant de la cible.
+- **Recherche approximative (ANN)** : très rapide, avec un risque minime de rater le vrai plus proche voisin. Sur 14 chunks, le résultat est en pratique exact.
+
+**Distance cosinus vs score**
+- ChromaDB renvoie une **distance** : $d = 1 - \cos(\theta)$ (0 = identiques ; 2 = opposés).
+- On la convertit en **score** : $s = 1 - d = \cos(\theta)$ (1 = identiques). C'est plus intuitif : plus grand = plus pertinent.
+- **Exemple** : distance mesurée 0,005 entre $(1, 0)$ et $(1;\ 0{,}1)$ → score 0,995.
+
+**Upsert = update + insert**
+- Si l'identifiant existe, l'élément est **remplacé** ; sinon, il est **ajouté**.
+- Avec des `chunk_id` déterministes (étape 3.2), réindexer **ne crée jamais de doublon**.
+
+**Métadonnées et filtres**
+- Chaque vecteur porte un petit dictionnaire `{"document_id", "source", "page_number", "chunk_index"}`.
+- `get(where={"document_id": "..."})` filtre sur ces métadonnées. C'est ainsi qu'on vérifie la présence d'un document ou qu'on le supprime.
+
+**Garde-fou « même modèle »**
+- Le nom du modèle est enregistré dans les métadonnées **de la collection**. Rouvrir la base avec un autre modèle lève une erreur explicite, au lieu de produire des résultats absurdes **sans le signaler**.
+
+## Étape 5.3 — Flux d'indexation
+
+### Ce qui a été fait
+
+- Créé `app/rag/pipeline.py` avec `IngestionPipeline` :
+  ```
+  PDF ─► load_pdf ─► clean_pages ─► chunk_pages ─► embed_documents ─► add_chunks
+  ```
+  - `ingest_pdf(path, replace=False)` renvoie un `IngestionReport` (`indexed` / `skipped` / `error`) ;
+  - `ingest_directory(dir, replace=False)` traite tous les PDF ; un fichier cassé n'arrête pas les autres.
+- Créé `scripts/build_index.py` (option `--replace`).
+- Créé `tests/fakes.py` avec `KeywordEncoder`, un faux modèle dont chaque dimension correspond à un mot-clé (« rag », « vecteurs », « cosinus »…). La recherche donne alors des résultats **prévisibles**.
+- Créé `tests/integration/test_ingestion_to_index.py` (5 tests).
+- Résultats réels :
+  ```
+  python -m scripts.build_index
+  indexed  01_introduction_rag.pdf                    2 p.   5 chunks
+  indexed  02_embeddings_recherche_vectorielle.pdf    2 p.   4 chunks
+  indexed  03_evaluation_rag.pdf                      2 p.   5 chunks
+  Durée : 17.5 s — chunks dans l'index : 14
+
+  python -m scripts.build_index      (2e fois)
+  skipped  ... (×3)  déjà indexé
+  Durée : 0.0 s — chunks dans l'index : 14
+  ```
+
+### Tests (pytest)
+
+| Test | Ce qu'il vérifie |
+|---|---|
+| `test_directory_is_indexed_and_bad_file_reported` | `casse.pdf` → `error` ; les 2 autres → `indexed` ; nombre de chunks cohérent |
+| `test_second_run_skips_already_indexed_documents` | 2e passage → `skipped`, y compris pour une **copie** renommée |
+| `test_replace_reindexes_without_duplicates` | `replace=True` → `indexed`, même nombre de chunks |
+| `test_indexed_chunks_are_searchable` | Une question sur le « cosinus » retrouve `vecteurs.pdf` |
+| `test_missing_directory_is_an_error` | Dossier absent → `FileNotFoundError` |
+
+**Résultat réel** : `python -m pytest -q` → **110 passed, 2 deselected** (2,58 s).
+
+### Notions apprises
+
+**Orchestration vs logique métier**
+- `pipeline.py` n'invente rien : il **enchaîne** des modules qui ne se connaissent pas entre eux. Chaque module reste testable seul, et le pipeline est testé dans son ensemble.
+
+**Dédoublonnage à deux niveaux**
+1. **Document** : `document_id` = hash du contenu. S'il est déjà présent, on saute tout le document, sans rien recalculer.
+2. **Chunk** : `upsert` sur des `chunk_id` déterministes.
+- **Pourquoi `--replace` supprime d'abord** : si l'on passe de 800 à 400 caractères, un document qui avait 5 chunks en aura 10. Mais s'il passait de 10 à 5, les `chunk_id` `-c5` à `-c9` resteraient dans la base, **orphelins**, si on ne les supprimait pas.
+
+**Incident : encodage avec PowerShell 5.1**
+- `Get-Content` lit par défaut en ANSI (Windows-1252). Un fichier UTF-8 relu puis réécrit voit tous ses accents transformés (`é` → `Ã©`). C'est ce qu'on appelle le **mojibake**.
+- Détecté grâce à `git diff`, corrigé par `git checkout -- fichier`. **Leçon** : Git permet de revenir en arrière sans risque, et il faut toujours relire le diff avant de commiter.
+
+### À retenir
+
+- ChromaDB = vecteurs + texte + métadonnées, persistés sur disque, avec une recherche rapide (HNSW).
+- Distance cosinus $d = 1 - \cos$ ; score $s = 1 - d$.
+- Identifiants déterministes + upsert + saut des documents connus = pas de doublon.
+- Un seul modèle d'embeddings par collection, **vérifié par le code**.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1853,7 +2001,9 @@ python -m pytest tests/integration -v
 | `tests/integration/test_chunking_pipeline.py` | `pdf_loader` + `text_cleaner` + `chunker` + `compare_chunking` | 4 | 3.5 | [voir](#étape-35--comparaison-des-stratégies) |
 | `tests/unit/test_embedding_model.py` | `app/embeddings/embedding_model.py` | 11 | 4.2 | [voir](#étape-42--module-embedding_modelpy) |
 | `tests/integration/test_embeddings_real_model.py` | vrai modèle E5 | 2 (`slow`) | 4.3 | [voir](#étape-43--mesures-réelles) |
-| **Total** | | **96** (88 unitaires + 6 d'intégration rapides + 2 lents) | | |
+| `tests/integration/test_chroma_store.py` | `app/vectorstore/chroma_store.py` | 9 | 5.2 | [voir](#étape-52--chromastore) |
+| `tests/integration/test_ingestion_to_index.py` | `app/rag/pipeline.py` (ingestion) | 5 | 5.3 | [voir](#étape-53--flux-dindexation) |
+| **Total** | | **112** (90 unitaires + 20 d'intégration rapides + 2 lents) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1877,6 +2027,7 @@ python -m pytest tests/integration -v
 | 2026-10-15 | 3.5 | après correction des titres orphelins | 82 passed in 0.63s |
 | 2026-10-15 | 4 | `python -m pytest -q` | 94 passed, 2 deselected in 0.66s |
 | 2026-10-15 | 4 | `python -m pytest -m slow -q` | 2 passed in 17.32s |
+| 2026-10-15 | 5 | `python -m pytest -q` | 110 passed, 2 deselected in 2.58s |
 
 ## Lire un résultat pytest
 
@@ -2018,6 +2169,15 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | `Protocol` | Décrit les méthodes attendues d'un objet, sans héritage | 4.2 |
 | Troncature silencieuse | Texte au-delà de la limite du modèle ignoré sans erreur | 4.3 |
 | Marqueur pytest (`slow`) | Étiquette pour sélectionner ou exclure des tests (`-m`) | 4.3 |
+| Base vectorielle | Base qui stocke des vecteurs et trouve leurs plus proches voisins | 5.2 |
+| HNSW | Index en graphe à plusieurs étages pour la recherche rapide de voisins | 5.2 |
+| ANN | *Approximate Nearest Neighbors* : recherche de voisins rapide et approximative | 5.2 |
+| Distance cosinus | $1 - \cos(\theta)$, renvoyée par ChromaDB | 5.2 |
+| Upsert | Mise à jour si l'id existe, insertion sinon | 5.2 |
+| Collection | Ensemble de vecteurs d'une base ChromaDB (équivalent d'une table) | 5.2 |
+| Orchestration | Enchaîner des modules indépendants sans y ajouter de logique | 5.3 |
+| Chunk orphelin | Chunk resté dans l'index alors qu'il n'existe plus dans le découpage actuel | 5.3 |
+| Mojibake | Texte abîmé par une mauvaise interprétation de l'encodage (`Ã©`) | 5.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
