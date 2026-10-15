@@ -51,3 +51,23 @@ class KeywordEncoder:
     def get_embedding_dimension(self) -> int:
         # Une dimension par mot du vocabulaire
         return len(VOCABULARY)
+
+
+class FakeLLM:
+    """Faux LLM : renvoie une réponse fixée à l'avance et mémorise les prompts reçus."""
+
+    def __init__(
+        self, answer: str = "Le RAG combine recherche et génération [1]."
+    ) -> None:
+        # Réponse renvoyée à chaque appel
+        self.answer = answer
+
+        # Historique des appels : (prompt system, prompt user)
+        self.calls: list[tuple[str, str]] = []
+
+    def generate(self, system_prompt: str, user_prompt: str) -> str:
+        # Mémorise les prompts pour que le test puisse les inspecter
+        self.calls.append((system_prompt, user_prompt))
+
+        # Réponse scénarisée
+        return self.answer

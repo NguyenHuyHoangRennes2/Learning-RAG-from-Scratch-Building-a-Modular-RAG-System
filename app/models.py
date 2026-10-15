@@ -109,3 +109,36 @@ class SearchResult:
 
     # Similarité cosinus avec la question : plus c'est grand, plus c'est proche (max 1)
     score: float
+
+
+# frozen=True : une réponse produite ne doit plus changer
+@dataclass(frozen=True)
+class RAGAnswer:
+    """Réponse complète du RAG : texte, sources et informations de traçabilité."""
+
+    # La question posée
+    question: str
+
+    # Le texte de la réponse (ou la phrase d'abstention)
+    answer: str
+
+    # Les chunks fournis au LLM, numérotés [1], [2]... dans cet ordre
+    sources: tuple[SearchResult, ...]
+
+    # Numéros des sources réellement citées par le LLM (ex. (1, 3))
+    cited: tuple[int, ...]
+
+    # Vrai si le système a déclaré ne pas trouver la réponse
+    abstained: bool
+
+    # Durée de la recherche, en millisecondes
+    retrieval_ms: float
+
+    # Durée de la génération par le LLM, en millisecondes (0 si le LLM n'a pas été appelé)
+    generation_ms: float
+
+    @property
+    def cited_sources(self) -> tuple[SearchResult, ...]:
+        """Les sources effectivement citées (numéros 1..n convertis en éléments de ``sources``)."""
+        # Le numéro n correspond à l'élément d'indice n - 1
+        return tuple(self.sources[number - 1] for number in self.cited)

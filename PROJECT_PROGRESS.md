@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 8 — Pipeline RAG complet
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 8.1 | Structure `RAGAnswer` (`app/models.py`) | ✅ Terminée (2026-10-15, mode autonome) |
+| 8.2 | `QuestionAnsweringPipeline`, façade `RAGPipeline`, `build_pipeline(settings)` (`app/rag/pipeline.py`) | ✅ Terminée (2026-10-15, mode autonome) |
+| 8.3 | `scripts/ask.py` (CLI) ; `build_index.py` simplifié | ✅ Terminée (2026-10-15, mode autonome), génération réelle non testée (Ollama absent) |
+
+**Phase 8 terminée le 2026-10-15.**
+
 ## Phase 7 — Intégration du LLM (Ollama)
 
 | Étape | Titre | Statut |
@@ -155,6 +165,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `app/generation/llm.py` | 7.3 | Protocole `LLMClient` ; `OllamaClient` (`generate`, `is_available`) ; `LLMError`, `LLMUnavailableError` |
 | `tests/unit/test_llm.py` | 7.3 | 5 tests avec `httpx.MockTransport` (requête envoyée, serveur éteint, modèle absent, délai, réponse invalide, disponibilité) |
 | `scripts/check_ollama.py` | 7.3 | Diagnostic : serveur joignable ? modèle installé ? génération OK ? |
+| `app/models.py` (modifié) | 8.1 | + `RAGAnswer` (question, answer, sources, cited, abstained, retrieval_ms, generation_ms, `cited_sources`) |
+| `app/rag/pipeline.py` (modifié) | 8.2 | + `QuestionAnsweringPipeline.ask`, `RAGPipeline` (façade : ask, ingest_pdf, ingest_directory, list_documents, delete_document), `build_pipeline(settings, llm=None)` |
+| `tests/fakes.py` (modifié) | 8.2 | + `FakeLLM` (réponse scénarisée, mémorise les prompts) |
+| `tests/integration/test_rag_pipeline.py` | 8.2 | 7 tests de bout en bout (faux LLM) |
+| `scripts/ask.py` | 8.3 | CLI : question → réponse + sources + latences ; sans Ollama, affiche les passages retrouvés |
+| `scripts/build_index.py` (modifié) | 8.3 | Utilise `build_pipeline` |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -226,6 +242,10 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **Citations vérifiables** : `extract_citations` ne garde que les numéros qui existent (1…n). Un `[7]` avec 5 sources est une citation **inventée**, donc ignorée.
 - **Client Ollama** (7.3) : appel direct de `POST /api/chat` (`stream: false`) avec httpx, plutôt que via le paquet `ollama` (décision de 1.4). Les erreurs réseau sont traduites en `LLMUnavailableError` / `LLMError`, avec un message qui dit **quoi faire** (`ollama pull …`). Le pipeline ne dépend que du `Protocol` `LLMClient`, ce qui permet d'injecter un faux LLM en test.
 - **Température 0,1** : pour un RAG, on veut des réponses stables et collées au contexte, pas de créativité.
+- **Pipeline Q/R** (8.2) : retriever → `build_user_prompt` → `llm.generate` → `extract_citations` + `is_no_answer`.
+  - **Index vide ou aucune source** : abstention **sans appeler le LLM**. Un LLM sans contexte répondrait de mémoire, ce qui est exactement ce qu'on veut éviter.
+  - Les erreurs LLM (`LLMError`) **remontent** à l'appelant : l'API les traduira en HTTP 503, et la CLI affiche alors les passages.
+- **Façade `RAGPipeline`** : un seul objet pour l'API et l'interface. **`build_pipeline`** est le seul endroit qui lit la configuration pour assembler les composants, et il crée **un seul** `EmbeddingModel` partagé par l'ingestion et la recherche (règle d'or vérifiée par un test).
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -443,7 +463,15 @@ Phase 7, vérifiée le 2026-10-15 :
 
 - `ruff check` : OK ; `python -m pytest -q` : **140 passed, 2 deselected** (3,07 s)
 - `python -m scripts.check_ollama` → `❌ Ollama injoignable à http://localhost:11434 ou modèle 'qwen2.5:3b' absent.`, code de sortie 1. C'est le comportement **attendu** sur cette machine (Ollama non installé). Le message donne les 3 commandes à lancer.
+- Commit `6575be9`
 - **Non vérifié** : aucune génération réelle n'a pu être faite. Le format de l'API (`/api/chat`, `message.content`, `/api/tags`) est reproduit dans les faux serveurs des tests à partir de la documentation d'Ollama, mais il n'a pas été confronté à un vrai serveur.
+
+Phase 8, vérifiée le 2026-10-15 :
+
+- `ruff check` : OK ; `python -m pytest -q` : **147 passed, 2 deselected** (3,39 s)
+- `python -m scripts.ask "Que risque-t-on si l'on récupère trop de passages ?"` sur le vrai index (28 chunks) : la recherche fonctionne et Ollama est absent. On obtient le message `⚠️ Ollama est injoignable…`, suivi des 5 passages retrouvés (scores 0,842 à 0,829). Le passage [2] (`02_embeddings_recherche_vectorielle.pdf, p. 1`) contient la preuve attendue (« un nombre K trop élevé peut ajouter du bruit »).
+- `python -m scripts.build_index` (après le passage à `build_pipeline`) : 3 × `skipped`, 28 chunks, 0,0 s.
+- **Non vérifié** : la qualité des réponses générées (Ollama absent). Elle sera mesurable avec `scripts/evaluate_rag.py` (Phase 11) dès qu'Ollama sera installé.
 
 ## Données de travail
 
@@ -465,4 +493,4 @@ Phase 7, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 8 — Pipeline RAG complet (question → recherche → prompt → LLM → réponse citée).
+Phase 9 — API REST FastAPI.

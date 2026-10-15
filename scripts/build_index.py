@@ -17,10 +17,8 @@ from app.core.config import get_settings
 # Configuration du logging : ce script est un POINT D'ENTRÉE
 from app.core.logging_config import setup_logging
 
-# Les composants assemblés
-from app.embeddings.embedding_model import EmbeddingModel
-from app.rag.pipeline import IngestionPipeline
-from app.vectorstore.chroma_store import ChromaStore
+# Assemblage de tous les composants à partir de la configuration
+from app.rag.pipeline import build_pipeline
 
 
 def main() -> None:
@@ -35,29 +33,12 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Lit la configuration
-    settings = get_settings()
-
-    # Assemble les composants à partir de la configuration
-    pipeline = IngestionPipeline(
-        embedder=EmbeddingModel(
-            settings.embedding_model_name,
-            settings.embedding_device,
-            settings.embedding_batch_size,
-        ),
-        store=ChromaStore(
-            settings.chroma_dir,
-            settings.chroma_collection_name,
-            settings.embedding_model_name,
-        ),
-        chunk_size=settings.chunk_size,
-        chunk_overlap=settings.chunk_overlap,
-        chunk_strategy=settings.chunk_strategy,
-    )
+    # Pipeline complet construit depuis la configuration (le LLM n'est pas appelé ici)
+    pipeline = build_pipeline(get_settings())
 
     # Lance l'ingestion et mesure sa durée
     start = time.perf_counter()
-    reports = pipeline.ingest_directory(settings.raw_data_dir, replace=args.replace)
+    reports = pipeline.ingest_directory(replace=args.replace)
     seconds = time.perf_counter() - start
 
     # Rapport par document
@@ -65,11 +46,14 @@ def main() -> None:
     for report in reports:
         # Statut, nom du fichier, pages, chunks et éventuel message
         print(
-            f"{report.status:<8} {report.source:<42} {report.page_count} p. {report.chunk_count:>3} chunks  {report.message}"
+            f"{report.status:<8} {report.source:<42} {report.page_count} p. "
+            f"{report.chunk_count:>3} chunks  {report.message}"
         )
 
     # Rapport global
-    print(f"\nDurée : {seconds:.1f} s — chunks dans l'index : {pipeline.store.count()}")
+    print(
+        f"\nDurée : {seconds:.1f} s — chunks dans l'index : {pipeline.ingestion.store.count()}"
+    )
 
 
 # Ce bloc ne s'exécute que si on lance le fichier directement (pas si on l'importe)

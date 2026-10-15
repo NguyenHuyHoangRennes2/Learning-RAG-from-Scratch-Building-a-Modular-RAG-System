@@ -1,13 +1,20 @@
-"""Orchestration du RAG : ingestion des documents (et, en Phase 8, questions-réponses).
+"""Orchestration du RAG : ingestion des documents et questions-réponses.
 
 Ce module ne contient aucune logique « métier » propre : il ENCHAÎNE les modules
-spécialisés, chacun restant indépendant des autres :
+spécialisés, chacun restant indépendant des autres.
 
+Ingestion (Phase 5) :
     PDF ─► pdf_loader ─► text_cleaner ─► chunker ─► embedding_model ─► chroma_store
+
+Question-réponse (Phase 8) :
+    question ─► retriever ─► prompts ─► LLM ─► citations ─► RAGAnswer
 """
 
-# logging pour tracer chaque document traité
+# logging pour tracer chaque document traité et chaque question
 import logging
+
+# time.perf_counter : mesure de la latence de chaque étape
+import time
 
 # dataclass pour le compte rendu d'ingestion
 from dataclasses import dataclass
@@ -18,11 +25,21 @@ from pathlib import Path
 # Literal : le statut d'ingestion ne peut prendre que quelques valeurs
 from typing import Literal
 
-# Le type des stratégies de chunking
-from app.core.config import ChunkStrategy
+# Configuration : type des stratégies et paramètres de construction du pipeline
+from app.core.config import ChunkStrategy, Settings
 
-# Vectorisation des chunks
+# Vectorisation des chunks et des questions
 from app.embeddings.embedding_model import EmbeddingModel
+
+# Génération : client LLM et construction des prompts
+from app.generation.llm import LLMClient, OllamaClient
+from app.generation.prompts import (
+    NO_ANSWER_MESSAGE,
+    SYSTEM_PROMPT,
+    build_user_prompt,
+    extract_citations,
+    is_no_answer,
+)
 
 # Étape 3 : découpage
 from app.ingestion.chunker import chunk_pages
@@ -32,6 +49,12 @@ from app.ingestion.pdf_loader import PDFLoadError, compute_document_id, load_pdf
 
 # Étape 2 : nettoyage
 from app.ingestion.text_cleaner import clean_pages
+
+# Structure de la réponse finale
+from app.models import RAGAnswer
+
+# Recherche sémantique
+from app.retrieval.retriever import Retriever
 
 # Stockage des vecteurs
 from app.vectorstore.chroma_store import ChromaStore
@@ -170,3 +193,171 @@ class IngestionPipeline:
 
         # Renvoie tous les comptes rendus
         return reports
+
+
+class QuestionAnsweringPipeline:
+    """Répond à une question : recherche → prompt → LLM → citations."""
+
+    def __init__(self, retriever: Retriever, llm: LLMClient) -> None:
+        """Reçoit le retriever et le client LLM déjà construits (injection de dépendances)."""
+        # Recherche sémantique (même modèle d'embeddings que l'indexation)
+        self.retriever = retriever
+
+        # N'importe quel objet qui respecte le protocole LLMClient (Ollama, ou un faux en test)
+        self.llm = llm
+
+    def ask(self, question: str) -> RAGAnswer:
+        """Produit une réponse citée, ou une abstention explicite."""
+        # Une question vide n'a pas de sens
+        if not question.strip():
+            # Erreur explicite (l'API la traduira en HTTP 422)
+            raise ValueError("la question ne doit pas être vide")
+
+        # Étape 1 : recherche des chunks pertinents (chronométrée)
+        start = time.perf_counter()
+        sources = self.retriever.retrieve(question)
+        retrieval_ms = 1000 * (time.perf_counter() - start)
+
+        # Aucun chunk (index vide, ou tous sous le seuil) : abstention SANS appeler le LLM
+        if not sources:
+            # Inutile (et risqué) de demander au LLM de répondre sans aucune source
+            logger.info("Aucune source pour %r : abstention", question)
+            return RAGAnswer(
+                question, NO_ANSWER_MESSAGE, (), (), True, retrieval_ms, 0.0
+            )
+
+        # Étape 2 : prompt explicite (sources numérotées puis question)
+        user_prompt = build_user_prompt(question, sources)
+
+        # Étape 3 : génération (chronométrée) ; les erreurs LLM remontent à l'appelant
+        start = time.perf_counter()
+        answer = self.llm.generate(SYSTEM_PROMPT, user_prompt)
+        generation_ms = 1000 * (time.perf_counter() - start)
+
+        # Étape 4 : traçabilité, avec les numéros de sources réellement cités (les inventés sont ignorés)
+        cited = extract_citations(answer, len(sources))
+
+        # Abstention détectée grâce à la phrase imposée par le prompt
+        abstained = is_no_answer(answer)
+
+        # Trace un résumé de la réponse
+        logger.info(
+            "Question %r : %d source(s), citées %s, abstention=%s, %.0f + %.0f ms",
+            question,
+            len(sources),
+            cited,
+            abstained,
+            retrieval_ms,
+            generation_ms,
+        )
+
+        # Réponse complète
+        return RAGAnswer(
+            question=question,
+            answer=answer,
+            sources=tuple(sources),
+            cited=tuple(cited),
+            abstained=abstained,
+            retrieval_ms=retrieval_ms,
+            generation_ms=generation_ms,
+        )
+
+
+class RAGPipeline:
+    """Façade unique de l'application : ingestion + questions-réponses + gestion de l'index.
+
+    C'est le SEUL objet que l'API (Phase 9) manipule.
+    """
+
+    def __init__(
+        self,
+        ingestion: IngestionPipeline,
+        qa: QuestionAnsweringPipeline,
+        raw_data_dir: Path,
+    ) -> None:
+        """Assemble les deux sous-pipelines."""
+        # Indexation des documents
+        self.ingestion = ingestion
+
+        # Questions-réponses
+        self.qa = qa
+
+        # Dossier où sont rangés les PDF (ceux envoyés par l'API y sont enregistrés)
+        self.raw_data_dir = raw_data_dir
+
+    def ask(self, question: str) -> RAGAnswer:
+        """Répond à une question (voir QuestionAnsweringPipeline.ask)."""
+        # Délègue au pipeline de questions-réponses
+        return self.qa.ask(question)
+
+    def ingest_pdf(self, pdf_path: Path, replace: bool = False) -> IngestionReport:
+        """Indexe un PDF (voir IngestionPipeline.ingest_pdf)."""
+        # Délègue au pipeline d'ingestion
+        return self.ingestion.ingest_pdf(pdf_path, replace)
+
+    def ingest_directory(self, replace: bool = False) -> list[IngestionReport]:
+        """Indexe tous les PDF du dossier configuré."""
+        # Délègue au pipeline d'ingestion
+        return self.ingestion.ingest_directory(self.raw_data_dir, replace)
+
+    def list_documents(self) -> list[dict[str, str | int]]:
+        """Documents présents dans l'index."""
+        # Lecture directe dans la base vectorielle
+        return self.ingestion.store.list_documents()
+
+    def delete_document(self, document_id: str) -> int:
+        """Retire un document de l'index ; renvoie le nombre de chunks supprimés."""
+        # Suppression dans la base vectorielle
+        return self.ingestion.store.delete_document(document_id)
+
+
+def build_pipeline(settings: Settings, llm: LLMClient | None = None) -> RAGPipeline:
+    """Construit le pipeline complet à partir de la configuration.
+
+    Un SEUL objet EmbeddingModel est partagé par l'ingestion et la recherche :
+    c'est la garantie que chunks et questions sont vectorisés par le même modèle.
+    ``llm`` permet d'injecter un autre client (ex. un faux LLM en test).
+    """
+    # Modèle d'embeddings unique (chargé au premier usage seulement)
+    embedder = EmbeddingModel(
+        settings.embedding_model_name,
+        settings.embedding_device,
+        settings.embedding_batch_size,
+    )
+
+    # Base vectorielle persistante
+    store = ChromaStore(
+        settings.chroma_dir,
+        settings.chroma_collection_name,
+        settings.embedding_model_name,
+    )
+
+    # Client LLM : celui fourni, sinon Ollama configuré
+    llm_client = llm or OllamaClient(
+        settings.ollama_base_url,
+        settings.ollama_model,
+        settings.llm_temperature,
+        settings.llm_num_ctx,
+        settings.llm_timeout_seconds,
+    )
+
+    # Assemble les deux sous-pipelines autour des mêmes composants
+    return RAGPipeline(
+        ingestion=IngestionPipeline(
+            embedder,
+            store,
+            settings.chunk_size,
+            settings.chunk_overlap,
+            settings.chunk_strategy,
+        ),
+        qa=QuestionAnsweringPipeline(
+            Retriever(
+                embedder,
+                store,
+                settings.retrieval_top_k,
+                settings.retrieval_min_score,
+            ),
+            llm_client,
+        ),
+        raw_data_dir=settings.raw_data_dir,
+    )

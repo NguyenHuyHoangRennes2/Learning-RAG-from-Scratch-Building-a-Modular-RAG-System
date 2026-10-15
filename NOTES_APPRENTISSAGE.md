@@ -29,6 +29,7 @@
 - [Phase 5 — Base vectorielle (ChromaDB)](#phase-5--base-vectorielle-chromadb)
 - [Phase 6 — Recherche sémantique et évaluation](#phase-6--recherche-sémantique-et-évaluation-de-la-recherche)
 - [Phase 7 — Intégration du LLM (Ollama)](#phase-7--intégration-du-llm-ollama)
+- [Phase 8 — Pipeline RAG complet](#phase-8--pipeline-rag-complet)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -2196,6 +2197,92 @@ python -m pytest tests/integration -v
 
 ---
 
+# Phase 8 — Pipeline RAG complet
+
+**Objectif de la phase** : relier toutes les briques en un seul flux, et offrir **un seul objet** (`RAGPipeline`) à l'API et à l'interface.
+
+> Phase réalisée en **mode autonome** le 2026-10-15.
+
+```
+                  ┌──────────── IngestionPipeline (Phase 5) ────────────┐
+PDF ──────────────► load_pdf ► clean_pages ► chunk_pages ► embed ► ChromaDB
+                                                                     │
+question ─► Retriever (embed_query + search) ◄───────────────────────┘
+               │ sources [1..K]
+               ▼
+        build_user_prompt ─► LLM (Ollama) ─► extract_citations / is_no_answer ─► RAGAnswer
+                  └────────── QuestionAnsweringPipeline (Phase 8) ──────────┘
+```
+
+## Étape 8.1 — `RAGAnswer`
+
+- Nouvelle dataclass dans `app/models.py` : `question`, `answer`, `sources` (les chunks numérotés envoyés au LLM), `cited` (numéros réellement cités), `abstained`, `retrieval_ms`, `generation_ms`.
+- La propriété `cited_sources` convertit les numéros (1..n) en chunks : le numéro $n$ correspond à l'indice $n - 1$.
+- **Pourquoi garder les sources ET les citations** : on peut ainsi vérifier si le LLM a cité ce qu'il a reçu (Phase 11 : *citation correctness*).
+
+## Étape 8.2 — Le pipeline de questions-réponses
+
+### Ce qui a été fait
+
+- `QuestionAnsweringPipeline.ask(question)` :
+  1. refuse une question vide ;
+  2. recherche les chunks (chronométrée) ;
+  3. **si aucune source** : abstention **sans appeler le LLM** ;
+  4. construit le prompt, appelle le LLM (chronométré) ;
+  5. extrait les citations valides et détecte l'abstention.
+- `RAGPipeline` : la **façade** (`ask`, `ingest_pdf`, `ingest_directory`, `list_documents`, `delete_document`).
+- `build_pipeline(settings, llm=None)` : assemble tout à partir de la configuration, avec **un seul** `EmbeddingModel` partagé.
+- `tests/fakes.py` : + `FakeLLM`, qui renvoie une réponse fixée et mémorise les prompts reçus.
+- 7 tests dans `tests/integration/test_rag_pipeline.py`.
+
+### Tests (pytest)
+
+| Test | Ce qu'il vérifie |
+|---|---|
+| `test_answer_is_generated_from_retrieved_sources` | Le LLM reçoit SYSTEM_PROMPT + la question + la bonne source ; `[1]` → `cours.pdf, p. 2` ; latences mesurées |
+| `test_llm_abstention_is_detected` | Réponse = phrase d'abstention → `abstained=True`, aucune citation |
+| `test_empty_index_abstains_without_calling_the_llm` | Index vide → abstention, **0 appel** au LLM |
+| `test_invented_citations_are_not_reported` | `[9]` avec 2 sources → ignoré |
+| `test_blank_question_is_rejected` | Question vide → `ValueError` |
+| `test_documents_can_be_listed_and_deleted` | Listing et suppression via la façade |
+| `test_build_pipeline_shares_one_embedding_model` | `ingestion.embedder is qa.retriever.embedder` ; paramètres issus de la configuration |
+
+### Notions apprises
+
+**Façade (*facade pattern*)**
+- Un objet simple qui cache plusieurs sous-systèmes. L'API ne connaît que `RAGPipeline.ask()` : elle ignore l'existence de ChromaDB, d'E5 ou d'Ollama.
+
+**Racine de composition (*composition root*)**
+- `build_pipeline` est **le seul endroit** où les composants sont créés et branchés entre eux. Partout ailleurs, ils sont **reçus** en paramètre (injection), ce qui rend chaque morceau testable avec des faux.
+
+**Ne pas appeler le LLM sans contexte**
+- Sans source, un LLM répondrait avec ses connaissances générales, ce qui est impossible à vérifier et contraire au principe du RAG. On répond donc directement par l'abstention.
+
+**Test de bout en bout avec des faux**
+- Toute la chaîne réelle (PyMuPDF → nettoyage → chunking → ChromaDB → retriever → prompt → citations) est exercée. Seuls le modèle d'embeddings (lent) et le LLM (absent) sont remplacés.
+
+## Étape 8.3 — Interface en ligne de commande
+
+- `scripts/ask.py "question"` affiche la réponse, les sources (fichier, page, score) et les latences.
+- **Dégradation gracieuse** : si Ollama est injoignable, le script affiche quand même les passages retrouvés, puisque la recherche ne dépend pas du LLM.
+- Résultat réel (Ollama absent) :
+  ```
+  ⚠️  Ollama est injoignable à http://localhost:11434. Installez-le (https://ollama.com) puis lancez-le…
+  Passages retrouvés (sans génération) :
+    [1] 01_introduction_rag.pdf, p. 2 (score 0.842)
+    [2] 02_embeddings_recherche_vectorielle.pdf, p. 1 (score 0.836)   ← contient « K trop élevé peut ajouter du bruit »
+    ...
+  ```
+- `python -m pytest -q` → **147 passed, 2 deselected**.
+
+### À retenir
+
+- `RAGPipeline` = la seule porte d'entrée ; `build_pipeline` = le seul endroit qui assemble.
+- Pas de source → pas d'appel au LLM.
+- Une panne du LLM n'empêche pas la recherche : on dégrade le service au lieu de tout arrêter.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -2249,7 +2336,8 @@ python -m pytest tests/integration -v
 | `tests/integration/test_retrieval_eval.py` | `app/evaluation/retrieval_eval.py` | 1 | 6.3 | [voir](#étape-63--comparaison-des-réglages) |
 | `tests/unit/test_prompts.py` | `app/generation/prompts.py` | 7 | 7.2 | [voir](#étape-72--les-prompts) |
 | `tests/unit/test_llm.py` | `app/generation/llm.py` | 5 | 7.3 | [voir](#étape-73--le-client-ollama) |
-| **Total** | | **142** (115 unitaires + 25 d'intégration rapides + 2 lents) | | |
+| `tests/integration/test_rag_pipeline.py` | `app/rag/pipeline.py` (Q/R) | 7 | 8.2 | [voir](#étape-82--le-pipeline-de-questions-réponses) |
+| **Total** | | **149** (115 unitaires + 32 d'intégration rapides + 2 lents) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -2276,6 +2364,7 @@ python -m pytest tests/integration -v
 | 2026-10-15 | 5 | `python -m pytest -q` | 110 passed, 2 deselected in 2.58s |
 | 2026-10-15 | 6 | `python -m pytest -q` | 127 passed, 2 deselected in 2.95s |
 | 2026-10-15 | 7 | `python -m pytest -q` | 140 passed, 2 deselected in 3.07s |
+| 2026-10-15 | 8 | `python -m pytest -q` | 147 passed, 2 deselected in 3.39s |
 
 ## Lire un résultat pytest
 
@@ -2445,6 +2534,10 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | API REST | Interface HTTP (verbes GET/POST, JSON) entre deux programmes | 7.3 |
 | `httpx.MockTransport` | Faux réseau : une fonction répond à la place du serveur | 7.3 |
 | Erreur métier | Exception qui exprime le problème dans les termes de l'application | 7.3 |
+| Façade | Objet simple qui cache plusieurs sous-systèmes | 8.2 |
+| Racine de composition | Seul endroit où les composants sont créés et branchés | 8.2 |
+| Dégradation gracieuse | Continuer à rendre un service partiel quand une brique tombe | 8.3 |
+| Latence | Temps de réponse d'une étape (recherche, génération) | 8.1 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
