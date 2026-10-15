@@ -32,6 +32,7 @@
 - [Phase 8 — Pipeline RAG complet](#phase-8--pipeline-rag-complet)
 - [Phase 9 — API REST (FastAPI)](#phase-9--api-rest-fastapi)
 - [Phase 10 — Interface Streamlit](#phase-10--interface-streamlit)
+- [Phase 11 — Tests et évaluation du RAG](#phase-11--tests-et-évaluation-du-rag)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -2462,6 +2463,94 @@ Navigateur ⇄ Streamlit (frontend/) ──HTTP──► FastAPI (app/api) ─�
 
 ---
 
+# Phase 11 — Tests et évaluation du RAG
+
+**Objectif de la phase** : mesurer la **qualité des réponses**, séparément de la recherche (déjà mesurée en Phase 6), et faire le bilan des tests.
+
+> Phase réalisée en **mode autonome** le 2026-10-15. ⚠️ Ollama absent : les réponses d'un **vrai LLM** n'ont pas pu être mesurées. Le système d'évaluation est prêt, et il a été exercé sur une **référence sans LLM**.
+
+## Étape 11.1 — Métriques de réponse
+
+- Créé `app/evaluation/answer_eval.py` :
+
+  | Métrique | Définition | Ce qu'elle détecte |
+  |---|---|---|
+  | **Abstention correcte** | Le système s'abstient ⇔ la question n'a pas de réponse dans le corpus | Inventions sur les questions hors corpus ; refus injustifiés |
+  | **Couverture des mots-clés** | Part des `expected_keywords` présents dans la réponse | Réponse hors sujet (mais pénalise une reformulation valide) |
+  | **Précision des citations** | Sources citées contenant une preuve / sources citées | Citations « décoratives » qui ne soutiennent rien |
+  | **Fidélité lexicale** | Part des phrases dont au moins 60 % des mots de 4 lettres ou plus sont dans les sources | Phrases inventées de toutes pièces |
+  | **Latence** | Durée moyenne de la recherche et de la génération | Lenteur |
+
+### Notions apprises
+
+**Fidélité (*faithfulness*)**
+- **Définition** (document 3 du corpus) : les affirmations de la réponse sont **soutenues** par les documents récupérés.
+- **Mon heuristique lexicale** : pour chaque phrase $p$ de la réponse, $\text{support}(p) = \dfrac{\#\{\text{mots porteurs de } p \text{ présents dans les sources}\}}{\#\{\text{mots porteurs de } p\}}$, et la phrase est soutenue si $\text{support}(p) \geq 0{,}6$.
+- **Exemple** (test) : « Le reranking ajoute de la latence » → 3 mots porteurs (`reranking`, `ajoute`, `latence`), tous présents : support 1,0, phrase soutenue. « Il fonctionne grâce aux ordinateurs quantiques » → 4 mots porteurs, aucun présent : support 0, phrase non soutenue. Fidélité = 1/2 = **0,5**.
+- **Limite importante** : « Le reranking **ne** réduit **pas** la latence » utilise les mêmes mots et serait jugée soutenue. Seul un juge humain (ou un modèle d'inférence) détecte une inversion de sens.
+
+**Pourquoi pas un « LLM juge » ?**
+- C'est une pratique courante : un LLM note la fidélité d'un autre. Mais (1) aucun LLM n'est disponible ici, et (2) un modèle de 3B serait un juge peu fiable. Je préfère des indicateurs simples, **reproductibles et explicables**, en connaissant leurs limites.
+
+## Étape 11.2 — Script d'évaluation et référence sans LLM
+
+- `scripts/evaluate_rag.py --llm ollama` (par défaut) : il s'arrête proprement si Ollama est indisponible.
+- `scripts/evaluate_rag.py --llm baseline` : utilise `ExtractiveBaseline`, un faux « LLM » qui **recopie** le début de la source [1] et la cite. Il ne s'abstient jamais et n'invente jamais rien.
+- **Résultats réels de la référence** (`evaluation/results/answers_baseline.json`) :
+
+  | Métrique | Valeur | Interprétation |
+  |---|---|---|
+  | Abstention correcte | 0,800 | Juste sur les 16 questions avec réponse, faux sur les 4 sans réponse |
+  | S'abstient quand il n'y a pas de réponse | **0,000** | La référence ne s'abstient jamais : c'est **ce que le LLM doit améliorer** |
+  | Couverture des mots-clés | 0,679 | |
+  | Précision des citations | 0,562 | = part des questions dont le chunk n°1 contient la preuve |
+  | Fidélité lexicale | 1,000 | Triviale : une copie est toujours « fidèle » |
+
+**Référence (*baseline*)**
+- Un système très simple qui fixe un **plancher**. Si le vrai LLM ne fait pas mieux que « recopier le meilleur passage », il n'apporte rien.
+- **Vérification de cohérence** : la précision des citations de la référence (0,562 = 9/16) doit être égale à la part des questions dont le chunk n°1 contient la preuve. C'est bien le cas : deux mesures indépendantes qui concordent renforcent la confiance dans le code.
+
+**Bug trouvé par un test** : la référence retirait le dernier mot de **chaque** extrait (`rsplit(" ", 1)[0]` appliqué sans condition). Le test attendait la phrase entière et a échoué. Correction : on ne coupe que si l'extrait dépasse 300 caractères.
+
+## Étape 11.3 — Bilan des tests et couverture
+
+- Installé `pytest-cov==7.1.0` (ajouté à `requirements-dev.txt`) ; `.coverage` et `htmlcov/` ajoutés au `.gitignore`.
+- ```powershell
+  python -m pytest -m "" --cov=app --cov=frontend   # -m "" : TOUS les tests, lents compris
+  ```
+- **Résultat réel** : **178 passed** ; couverture **95 %** (1 040 instructions, 53 non exécutées).
+
+  | Module | Couverture |
+  |---|---|
+  | `app/api/*`, `app/core/*`, `app/models.py`, `app/vectorstore/*`, `app/retrieval/*`, `app/evaluation/metrics.py`… | 100 % |
+  | `chunker.py`, `pipeline.py`, `embedding_model.py` | 98 à 99 % |
+  | `frontend/streamlit_app.py` | **41 %** : l'affichage d'une réponse n'est pas exercé sans LLM |
+
+### Notions apprises
+
+**Couverture de code**
+- **Définition** : la part des lignes du programme exécutées **au moins une fois** par les tests.
+- **Formule** : $\text{couverture} = \dfrac{\text{instructions exécutées}}{\text{instructions totales}} = \dfrac{1040 - 53}{1040} \approx 0{,}949$, soit **95 %**.
+- **Interprétation** : une ligne jamais exécutée par les tests n'est **pas testée du tout**. Mais 100 % de couverture ne prouve pas l'absence de bugs : une ligne exécutée n'est pas forcément **vérifiée** par un `assert` pertinent.
+
+**La pyramide des tests du projet**
+
+| Niveau | Nombre | Exemples | Vitesse |
+|---|---|---|---|
+| Unitaires (`tests/unit/`) | 127 | chunker, métriques, prompts, client Ollama simulé | millisecondes |
+| Intégration (`tests/integration/`) | 49 | vraie ChromaDB, PDF générés, API avec `TestClient`, Streamlit avec `AppTest` | ~1 s chacun au plus |
+| Lents, vrai modèle (`-m slow`) | 2 | dimension 384, pertinence réelle | ~17 s |
+| Bout en bout réels | scripts | `build_index`, `evaluate_retrieval`, `evaluate_rag`, vrais serveurs + `curl` | secondes |
+
+### À retenir
+
+- Évaluer la recherche **et** la génération, séparément.
+- Des métriques automatiques simples, avec leurs limites écrites noir sur blanc.
+- Une référence sans LLM donne un plancher et des chiffres réels, même sans Ollama.
+- 95 % de couverture, et chaque phase a trouvé au moins un vrai bug grâce aux tests ou aux mesures.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -2519,7 +2608,8 @@ Navigateur ⇄ Streamlit (frontend/) ──HTTP──► FastAPI (app/api) ─�
 | `tests/integration/test_api.py` | `app/api/`, `app/main.py` | 16 | 9.3 | [voir](#étape-93--tests-et-vrai-serveur) |
 | `tests/unit/test_api_client.py` | `frontend/api_client.py` | 5 | 10.3 | [voir](#étape-103--tests-et-essai-réel) |
 | `tests/integration/test_streamlit_app.py` | `frontend/streamlit_app.py` | 1 | 10.3 | [voir](#étape-103--tests-et-essai-réel) |
-| **Total** | | **172** (121 unitaires + 49 d'intégration rapides + 2 lents) | | |
+| `tests/unit/test_answer_eval.py` | `app/evaluation/answer_eval.py`, `baselines.py` | 6 | 11.1 | [voir](#étape-111--métriques-de-réponse) |
+| **Total** | | **178** (127 unitaires + 49 d'intégration rapides + 2 lents) ; couverture 95 % | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -2551,6 +2641,9 @@ Navigateur ⇄ Streamlit (frontend/) ──HTTP──► FastAPI (app/api) ─�
 | 2026-10-15 | 9 | après corrections | 164 passed, 2 deselected in 5.03s |
 | 2026-10-15 | 10 | `python -m pytest -q` (1re fois) | 1 failed (chemin relatif d'`AppTest`) |
 | 2026-10-15 | 10 | après correction | 170 passed, 2 deselected in 7.89s |
+| 2026-10-15 | 11 | `test_answer_eval.py` (1re fois) | 1 failed (bug de la référence extractive) |
+| 2026-10-15 | 11 | `python -m pytest -q` | 176 passed, 2 deselected in 8.23s |
+| 2026-10-15 | 11 | `python -m pytest -q -m "" --cov=app --cov=frontend` | 178 passed in 25.89s ; couverture 95 % |
 
 ## Lire un résultat pytest
 
@@ -2743,6 +2836,13 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | `AppTest` | Exécute un script Streamlit sans navigateur, pour le tester | 10.3 |
 | Test de fumée | Vérifie seulement que l'application démarre sans erreur | 10.3 |
 | Télémétrie | Statistiques d'usage envoyées par un logiciel à son éditeur | 10.3 |
+| Fidélité (*faithfulness*) | Les affirmations de la réponse sont soutenues par les sources | 11.1 |
+| Pertinence de la réponse | La réponse traite bien la question posée | 11.1 |
+| Exactitude des citations | Les sources citées contiennent vraiment l'information | 11.1 |
+| LLM juge | Un LLM qui note les réponses d'un autre (non utilisé ici) | 11.1 |
+| Référence (*baseline*) | Système simple qui fixe un plancher de comparaison | 11.2 |
+| Couverture de code | Part des instructions exécutées par les tests | 11.3 |
+| Pyramide des tests | Beaucoup de tests unitaires rapides, moins de tests d'intégration et de bout en bout | 11.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

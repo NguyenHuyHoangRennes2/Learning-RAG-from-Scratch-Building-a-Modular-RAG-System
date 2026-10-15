@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 11 — Tests et évaluation du RAG
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 11.1 | Métriques de réponse (`app/evaluation/answer_eval.py`) : abstention, mots-clés, citations, fidélité lexicale, latence | ✅ Terminée (2026-10-15, mode autonome) |
+| 11.2 | `scripts/evaluate_rag.py` + référence extractive sans LLM (`app/evaluation/baselines.py`) | ⚠️ Terminée ; mesurée **avec la référence seulement** (Ollama absent) |
+| 11.3 | Couverture des tests (`pytest-cov`) : 95 % | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 11 terminée le 2026-10-15**, avec le blocage Ollama documenté.
+
 ## Phase 10 — Interface Streamlit
 
 | Étape | Titre | Statut |
@@ -206,6 +216,13 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `.streamlit/config.toml` | 10.3 | `gatherUsageStats = false`, `maxUploadSize = 20` |
 | `tests/unit/test_api_client.py` | 10.3 | 5 tests (`httpx.MockTransport`) |
 | `tests/integration/test_streamlit_app.py` | 10.3 | 1 test de fumée `AppTest` (API injoignable → message clair, pas d'exception) |
+| `app/evaluation/answer_eval.py` | 11.1 | `keyword_coverage`, `citation_precision`, `lexical_faithfulness`, `evaluate_answer`, `summarize_answers`, `AnswerResult` |
+| `app/evaluation/baselines.py` | 11.2 | `ExtractiveBaseline` : recopie la source [1] et la cite (plancher sans LLM) |
+| `scripts/evaluate_rag.py` | 11.2 | `--llm ollama` (par défaut ; s'arrête proprement si Ollama est absent) ou `--llm baseline` → `evaluation/results/answers_<llm>.json` |
+| `evaluation/results/answers_baseline.json` | 11.2 | Mesures réelles de la référence extractive |
+| `tests/unit/test_answer_eval.py` | 11.1 | 6 tests |
+| `requirements-dev.txt` (modifié) | 11.3 | + `pytest-cov==7.1.0` |
+| `.gitignore` (modifié) | 11.3 | + `.coverage`, `htmlcov/` |
 | `app/generation/llm.py` (modifié) | 9.3 | Délai de connexion de 1 s (`CONNECT_TIMEOUT_SECONDS`) ; `ConnectTimeout` → `LLMUnavailableError` ; + 1 test (6 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
@@ -292,6 +309,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - **préchauffage** du modèle d'embeddings au démarrage du serveur, pour que la première question ne paie pas les 15 s de chargement.
 - **Interface découplée** (Phase 10) : Streamlit ne parle au RAG **que par l'API HTTP** (`frontend/api_client.py`). Elle n'importe jamais le pipeline, ChromaDB ni le modèle, seulement `app.core.config` pour l'adresse de l'API. On pourrait remplacer l'interface (React…) sans toucher au backend. Lancement : `python -m streamlit run frontend/streamlit_app.py` (`-m` rend `app` et `frontend` importables).
 - **Statistiques d'usage de Streamlit désactivées** (`.streamlit/config.toml`) : elles sont activées par défaut, ce qui est contraire au principe « 100 % local ».
+- **Évaluation des réponses** (Phase 11) : séparée de celle de la recherche (règle 6.7). Ce sont des métriques **automatiques et reproductibles**, sans juge LLM : on ne peut pas utiliser un LLM pour juger alors qu'aucun LLM n'est disponible, et un petit modèle de 3B serait un juge peu fiable.
+  - **Abstention** : correcte si le système s'abstient exactement quand la question n'a pas de réponse.
+  - **Couverture des mots-clés** : indicateur de pertinence ; il pénalise les reformulations valides.
+  - **Précision des citations** : part des sources citées qui contiennent une preuve (même définition qu'en 6.2).
+  - **Fidélité lexicale** : une phrase est « soutenue » si au moins 60 % de ses mots de 4 lettres ou plus sont dans les sources. Elle détecte une phrase inventée de toutes pièces, mais **pas** une négation ni une inversion de sens.
+- **Référence extractive** : elle fixe un plancher mesurable sans LLM. Un vrai LLM doit faire mieux, surtout sur l'abstention (0 % pour la référence) et sur les citations (0,562 = taux de questions dont le chunk n°1 contient la preuve).
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -554,6 +577,31 @@ Phase 10, vérifiée le 2026-10-15 :
   - Question saisie dans `chat_input` → message « Erreur 503 : Ollama est injoignable à http://127.0.0.1:11434… » (attendu, Ollama absent)
 - Le 1er journal de Streamlit affichait « Collecting usage statistics » → `.streamlit/config.toml` ajouté ; au relancement, ce message n'apparaît plus (0 occurrence), et `/_stcore/health` répond `ok`.
 - **Non vérifié** : l'affichage d'une vraie réponse générée (Ollama absent). La mise en forme des réponses (`render_answer`) n'est exercée qu'à travers le code, sans rendu réel.
+- Commit `0996cf8`
+
+Phase 11, vérifiée le 2026-10-15 :
+
+- 1re exécution de `test_answer_eval.py` : **1 échec, vrai bug** dans `ExtractiveBaseline` : elle retirait le dernier mot même quand le passage faisait moins de 300 caractères (`rsplit` appliqué sans condition). Corrigé : la coupe n'a lieu que si le texte dépasse la limite.
+- `ruff check` : OK ; `python -m pytest -q` : **176 passed, 2 deselected**
+- `python -m scripts.evaluate_rag` (Ollama) → arrêt propre : « Ollama ou le modèle 'qwen2.5:3b' est indisponible : lancez « python -m scripts.check_ollama »… ». **Aucune mesure des réponses du vrai LLM.**
+- `python -m scripts.evaluate_rag --llm baseline` (vrai index : sentence 400/50, E5, top-5) :
+
+  | Métrique | Référence extractive |
+  |---|---|
+  | Abstention correcte (20 questions) | 0,800 |
+  | Répond quand il y a une réponse (16) | 1,000 |
+  | S'abstient quand il n'y en a pas (4) | **0,000** |
+  | Couverture des mots-clés | 0,679 |
+  | Précision des citations | 0,562 |
+  | Réponses sans citation | 0,000 |
+  | Fidélité lexicale | 1,000 (triviale : copie des sources) |
+  | Recherche, moyenne | 965 ms (*) |
+  | Génération, moyenne | 0,02 ms |
+
+  (*) La moyenne inclut le chargement du modèle d'embeddings lors de la 1re question (environ 19 s, voir Phase 9) ; une recherche « à chaud » prend environ 20 ms (Phase 6).
+- Cohérence vérifiée : précision des citations 0,562 = 9/16 = part des questions dont le chunk classé n°1 contient la preuve, soit la Precision@1 de la Phase 6.
+- **Couverture** (`python -m pytest -m "" --cov=app --cov=frontend`, 178 tests y compris les lents) : **95 %** (1 040 instructions, 53 non exécutées). `streamlit_app.py` est à 41 % (l'affichage d'une réponse n'est pas parcouru sans LLM) ; tous les modules de `app/` sont entre 85 % et 100 %.
+- `python -m pytest -q -m ""` (tous les tests, lents compris) : **178 passed** en 25,9 s.
 
 ## Données de travail
 
@@ -575,4 +623,4 @@ Phase 10, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 11 — Tests et évaluation du RAG (réponses).
+Phase 12 — Optimisation, documentation et déploiement (README complet, Docker).

@@ -5,6 +5,8 @@
 
 # --- Tests automatisés ---
 pytest==9.1.1
+# Mesure de la couverture des tests (Phase 11) : python -m pytest --cov=app --cov=frontend
+pytest-cov==7.1.0
 
 # --- Linter + formateur ---
 ruff==0.17.0

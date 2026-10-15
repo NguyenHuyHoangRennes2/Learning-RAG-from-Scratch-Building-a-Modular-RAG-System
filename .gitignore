@@ -12,6 +12,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# --- Rapports de couverture des tests (pytest-cov, régénérés à chaque mesure) ---
+.coverage
+htmlcov/
+
 # --- Données : documents privés et données générées ---
 # On ignore le contenu des dossiers, mais on garde les .gitkeep.
 data/raw/*
