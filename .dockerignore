@@ -1,0 +1,24 @@
+# Fichiers exclus du contexte de construction Docker (image plus petite, aucun secret copié)
+
+# Environnement local et caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Secrets et configuration locale
+.env
+
+# Données et index : fournis par des volumes au lancement, jamais intégrés à l'image
+data/
+storage/
+
+# Git, IDE, documentation de travail et tests
+.git/
+.vscode/
+.idea/
+tests/
+*.md

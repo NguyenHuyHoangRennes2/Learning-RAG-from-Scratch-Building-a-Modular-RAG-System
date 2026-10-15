@@ -1,0 +1,52 @@
+# Déploiement complet en 3 services : LLM (Ollama), API (FastAPI), interface (Streamlit).
+#
+#   docker compose up -d --build
+#   docker compose exec ollama ollama pull qwen2.5:3b        # une seule fois (~1,9 Go)
+#   docker compose exec api python -m scripts.build_index    # indexe les PDF de ./data/raw
+#   → interface : http://localhost:8501   ·   API : http://localhost:8000/docs
+
+services:
+  # LLM local
+  ollama:
+    # Version figée (pas « latest ») : déploiement reproductible
+    image: ollama/ollama:0.40.3
+    # Les modèles téléchargés survivent à la suppression du conteneur
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+  # API REST du RAG
+  api:
+    build: .
+    # Le service est joint par son NOM sur le réseau interne de Docker (http://ollama:11434)
+    environment:
+      RAG_OLLAMA_BASE_URL: http://ollama:11434
+    volumes:
+      # PDF et index partagés avec la machine hôte
+      - ./data:/app/data
+      - ./storage:/app/storage
+      # Cache du modèle d'embeddings (téléchargé une seule fois)
+      - hf-cache:/app/.cache
+    ports:
+      - "8000:8000"
+    depends_on:
+      - ollama
+    restart: unless-stopped
+
+  # Interface web : même image, autre commande
+  ui:
+    build: .
+    command: ["python", "-m", "streamlit", "run", "frontend/streamlit_app.py", "--server.address", "0.0.0.0", "--server.port", "8501"]
+    # L'interface appelle l'API par son nom de service
+    environment:
+      RAG_API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+# Volumes nommés gérés par Docker
+volumes:
+  ollama-models:
+  hf-cache:

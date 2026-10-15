@@ -2,7 +2,46 @@
 
 Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scratch-Building-a-Modular-RAG-System
 
-## Phase en cours
+## État du projet : ✅ Phases 1 à 12 terminées (2026-10-15) — en attente de l'évaluation de l'étudiant
+
+### Bilan global
+
+| Élément | État |
+|---|---|
+| Chaîne complète PDF → index → recherche → prompt → LLM → réponse citée | ✅ Code écrit et testé de bout en bout (LLM simulé) |
+| Recherche sémantique sur le vrai corpus | ✅ Mesurée : Recall@5 = 0,906, MRR = 0,755 (sentence 400/50, top-5) |
+| API FastAPI | ✅ Testée (`TestClient`) **et** avec un vrai serveur uvicorn |
+| Interface Streamlit | ✅ Testée (`AppTest`) **et** avec un vrai serveur, branchée sur la vraie API |
+| Tests | ✅ **178 passed** (127 unitaires, 49 d'intégration, 2 lents) ; couverture **95 %** ; Ruff OK |
+| Génération par un vrai LLM | ⚠️ **Jamais exécutée** : Ollama n'est pas installé (voir « Problèmes connus ») |
+| Image Docker | ⚠️ **Jamais construite** : Docker n'est pas installé ; fichiers vérifiés syntaxiquement |
+
+**À faire par l'étudiant pour tout valider** (environ 15 minutes) :
+```powershell
+winget install Ollama.Ollama
+ollama pull qwen2.5:3b
+python -m scripts.check_ollama                     # → ✅
+python -m scripts.ask "Qu'est-ce que le RAG ?"
+python -m scripts.evaluate_rag                     # mesure les réponses du vrai LLM
+```
+
+**Bugs réels trouvés et corrigés pendant le mode autonome** (par les tests ou par les mesures) :
+1. Titres orphelins en fin de chunk (3.5) : fins propres passées de 93 % à 100 %.
+2. PDF verrouillé sous Windows après un échec d'ouverture (9.3).
+3. Erreur 503 en 4,1 s au lieu de 1,0 s (`localhost` IPv6 + pas de délai de connexion) (9.3).
+4. 1re question à 20 s (modèle chargé à froid) → préchauffage, 1,4 s (9.3).
+5. Référence extractive qui tronquait le dernier mot (11.2).
+6. Incidents d'outillage, corrigés et documentés : mojibake PowerShell (5), `sed` avec un délimiteur mal choisi (9). Ils ont été détectés par `git diff` et réparés avant tout commit.
+
+### Phase 12 — Optimisation, documentation et déploiement
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 12.1 | Bilan de performance (mesures consolidées) et pistes d'optimisation | ✅ Terminée (2026-10-15, mode autonome) |
+| 12.2 | README complet | ✅ Terminée (2026-10-15, mode autonome) |
+| 12.3 | Déploiement : `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `requirements-lock.txt` | ⚠️ Écrit et vérifié syntaxiquement, **non construit** (Docker absent) |
+
+**Phase 12 terminée le 2026-10-15.**
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
@@ -223,6 +262,11 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/unit/test_answer_eval.py` | 11.1 | 6 tests |
 | `requirements-dev.txt` (modifié) | 11.3 | + `pytest-cov==7.1.0` |
 | `.gitignore` (modifié) | 11.3 | + `.coverage`, `htmlcov/` |
+| `README.md` (réécrit) | 12.2 | Présentation, installation, Ollama, utilisation (CLI, API, interface), configuration, résultats mesurés, tests, Docker, structure, limites |
+| `Dockerfile` | 12.3 | `python:3.13-slim-bookworm`, PyTorch CPU 2.14.1, utilisateur non root, API par défaut |
+| `docker-compose.yml` | 12.3 | Services `ollama` (`ollama/ollama:0.40.3`), `api` (:8000), `ui` (:8501) ; volumes `data/`, `storage/`, modèles |
+| `.dockerignore` | 12.3 | Exclut `.venv`, `.env`, `data/`, `storage/`, tests, Git |
+| `requirements-lock.txt` | 12.3 | `pip freeze` complet (dépendances transitives comprises), prévu depuis la Phase 1 |
 | `app/generation/llm.py` (modifié) | 9.3 | Délai de connexion de 1 s (`CONNECT_TIMEOUT_SECONDS`) ; `ConnectTimeout` → `LLMUnavailableError` ; + 1 test (6 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
@@ -315,6 +359,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - **Précision des citations** : part des sources citées qui contiennent une preuve (même définition qu'en 6.2).
   - **Fidélité lexicale** : une phrase est « soutenue » si au moins 60 % de ses mots de 4 lettres ou plus sont dans les sources. Elle détecte une phrase inventée de toutes pièces, mais **pas** une négation ni une inversion de sens.
 - **Référence extractive** : elle fixe un plancher mesurable sans LLM. Un vrai LLM doit faire mieux, surtout sur l'abstention (0 % pour la référence) et sur les citations (0,562 = taux de questions dont le chunk n°1 contient la preuve).
+- **Déploiement** (12.3) : une seule image pour l'API et l'interface, avec une commande différente pour chaque service. PyTorch est installé en **version CPU** depuis l'index PyTorch (sous Linux, PyPI fournirait la version CUDA, plusieurs Go en plus). Les données, l'index et les modèles sont dans des **volumes**, jamais dans l'image. Les versions d'images sont figées (`ollama/ollama:0.40.3`, dernière version stable non-rc consultée sur Docker Hub le 2026-10-15). Les services se joignent par leur nom (`http://ollama:11434`, `http://api:8000`) via les variables `RAG_*`, sans changer le code.
+- **Lock file** : `requirements-lock.txt` fige les 117 paquets de l'environnement Windows testé. Docker utilise `requirements.txt` (dépendances directes) + PyTorch CPU, car le lock n'a pas été vérifié sous Linux.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -602,6 +648,32 @@ Phase 11, vérifiée le 2026-10-15 :
 - Cohérence vérifiée : précision des citations 0,562 = 9/16 = part des questions dont le chunk classé n°1 contient la preuve, soit la Precision@1 de la Phase 6.
 - **Couverture** (`python -m pytest -m "" --cov=app --cov=frontend`, 178 tests y compris les lents) : **95 %** (1 040 instructions, 53 non exécutées). `streamlit_app.py` est à 41 % (l'affichage d'une réponse n'est pas parcouru sans LLM) ; tous les modules de `app/` sont entre 85 % et 100 %.
 - `python -m pytest -q -m ""` (tous les tests, lents compris) : **178 passed** en 25,9 s.
+- Commit `17f659d`
+
+Phase 12, vérifiée le 2026-10-15 :
+
+- **12.1 Bilan de performance** (mesures réelles des phases précédentes, CPU, 8 Go de RAM) :
+
+  | Opération | Durée mesurée | Phase |
+  |---|---|---|
+  | Chargement du modèle d'embeddings (depuis le cache) | 15,6 s | 4 |
+  | Vectorisation d'un chunk | 43 ms | 4 |
+  | Indexation des 3 PDF (28 chunks), modèle compris | 16,4 à 17,5 s | 5, 6 |
+  | Réindexation sans changement (documents sautés) | 0,0 s | 5 |
+  | Recherche (embedding de la question + ChromaDB) | ~19 ms | 6 |
+  | Démarrage de l'API (préchauffage compris) | ~13 s | 9 |
+  | `/ask` avec Ollama absent (réponse 503) | 1,0 s | 9 |
+  | Génération par le LLM | **non mesurée** (Ollama absent) | — |
+
+  Le goulot d'étranglement attendu sera la **génération** : un modèle de 3B sur une GTX 1650 produit typiquement quelques dizaines de tokens par seconde, mais ce n'est **pas mesuré** ici. Optimisations **non réalisées**, à évaluer après mesure avec Ollama : réponse en streaming (`stream: true`) pour afficher les mots au fil de l'eau ; recherche hybride BM25 + dense et reranking (règle 6.5 : seulement après une base mesurée) ; agrandissement du jeu de questions.
+- **12.2** : README réécrit. Les commandes et les chiffres qu'il cite sont ceux exécutés et mesurés dans ce fichier.
+- **12.3** :
+  - `ollama --version` et `docker --version` → absents (vérifié en début de Phase 4)
+  - Étiquettes Docker Hub consultées (API publique) : `ollama/ollama` 0.40.3 (2026-10-11, stable), 0.40.4 (2026-10-14), 0.40.5-rc0 ; `python:3.13-slim-bookworm` (2026-10-06)
+  - `docker-compose.yml` chargé avec `yaml.safe_load` : YAML valide, 3 services (`ollama`, `api`, `ui`), 2 volumes
+  - `pip freeze` → `requirements-lock.txt` (117 paquets, aucun paquet propre à Windows repéré : `colorama` est multiplateforme)
+  - **Non vérifié** : `docker build` / `docker compose up` (Docker absent). Points de vigilance pour le premier essai : téléchargement de PyTorch CPU (~200 Mo), premier téléchargement du modèle E5 dans le volume `hf-cache`, droits d'écriture de `appuser` sur les volumes montés.
+- Vérification finale : `ruff format --check` → 66 fichiers déjà formatés ; `ruff check` → OK ; `python -m pytest -q -m ""` → **178 passed** (26,8 s).
 
 ## Données de travail
 
@@ -623,4 +695,8 @@ Phase 11, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 12 — Optimisation, documentation et déploiement (README complet, Docker).
+Aucune : le projet est terminé (Phases 1 à 12). Prochaines actions proposées à l'étudiant :
+1. Évaluer le travail du mode autonome (Phases 3.5 à 12) à l'aide de ce fichier et de `NOTES_APPRENTISSAGE.md`.
+2. Installer Ollama, puis lancer `python -m scripts.evaluate_rag` pour mesurer les réponses du vrai LLM.
+3. Si Docker est installé un jour : `docker compose up -d --build`.
+4. `git push` : les commits du mode autonome sont **locaux** et n'ont pas été envoyés sur GitHub.

@@ -33,6 +33,8 @@
 - [Phase 9 — API REST (FastAPI)](#phase-9--api-rest-fastapi)
 - [Phase 10 — Interface Streamlit](#phase-10--interface-streamlit)
 - [Phase 11 — Tests et évaluation du RAG](#phase-11--tests-et-évaluation-du-rag)
+- [Phase 12 — Optimisation, documentation et déploiement](#phase-12--optimisation-documentation-et-déploiement)
+- [Bilan du projet](#bilan-du-projet)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -2551,6 +2553,99 @@ Navigateur ⇄ Streamlit (frontend/) ──HTTP──► FastAPI (app/api) ─�
 
 ---
 
+# Phase 12 — Optimisation, documentation et déploiement
+
+**Objectif de la phase** : faire le bilan des performances, documenter le projet pour un nouveau lecteur, et préparer un déploiement reproductible.
+
+> Phase réalisée en **mode autonome** le 2026-10-15. ⚠️ Docker n'est pas installé : les fichiers de déploiement sont écrits et vérifiés syntaxiquement, mais **l'image n'a pas été construite**.
+
+## Étape 12.1 — Bilan de performance
+
+| Opération | Durée mesurée |
+|---|---|
+| Chargement du modèle d'embeddings | 15,6 s (une fois, au démarrage de l'API) |
+| Vectorisation | 43 ms par chunk |
+| Indexation des 3 PDF (28 chunks) | ~17 s, modèle compris |
+| Recherche | ~19 ms par question |
+| Génération (LLM) | **non mesurée** (Ollama absent) |
+
+**Optimisation : la règle suivie**
+- On n'optimise que ce qui est **mesuré** et **lent**. La recherche (19 ms) est déjà rapide. Le vrai goulot sera probablement la génération, mais elle n'est pas mesurée : optimiser maintenant serait travailler à l'aveugle.
+- Les vraies optimisations du projet sont venues des mesures : délai de connexion (4,1 s → 1,0 s), préchauffage (20 s → 1,4 s), chunks de 400 caractères (MRR 0,630 → 0,755).
+- **Pistes, à mesurer d'abord** : streaming de la réponse, recherche hybride BM25 + dense, reranking.
+
+## Étape 12.2 — README
+
+- `README.md` réécrit pour un **lecteur qui découvre le projet** : à quoi il sert, comment il fonctionne (schéma), installation, Ollama, utilisation (CLI, API, interface), configuration, **résultats mesurés**, tests, Docker, structure, limites et pistes.
+- Règle suivie : chaque chiffre du README vient d'une mesure notée dans `PROJECT_PROGRESS.md`.
+
+## Étape 12.3 — Déploiement Docker
+
+### Ce qui a été fait
+
+- `Dockerfile` : image `python:3.13-slim-bookworm` ; **PyTorch CPU** installé en premier ; dépendances copiées **avant** le code (cache des couches) ; utilisateur **non root** ; l'API est lancée par défaut.
+- `docker-compose.yml` : 3 services.
+  ```
+  ui (Streamlit :8501) ──http://api:8000──► api (FastAPI :8000) ──http://ollama:11434──► ollama (LLM)
+                                              │
+                                    volumes : ./data, ./storage, cache des modèles
+  ```
+- `.dockerignore` : pas de `.venv`, de `.env` (secrets), de données ni de tests dans l'image.
+- `requirements-lock.txt` : `pip freeze` complet (117 paquets), prévu depuis la Phase 1.
+- Vérifications réalisées : `docker-compose.yml` est un YAML valide (`yaml.safe_load`) ; les versions d'images ont été vérifiées sur Docker Hub.
+
+### Notions apprises
+
+**Conteneur et image**
+- **Image** : un « modèle » figé qui contient le système, Python, les dépendances et le code. **Conteneur** : une image **en cours d'exécution**.
+- **Pourquoi** : « ça marche sur ma machine » devient « ça marche partout où Docker tourne ». C'est la même idée que le venv (Phase 1), étendue au système entier.
+
+**Couches et cache**
+- Chaque instruction du Dockerfile crée une **couche**. Si `requirements.txt` ne change pas, la couche d'installation (la plus longue) est réutilisée. C'est pour cela qu'on copie `requirements.txt` **avant** le code.
+
+**Volumes**
+- Les données (PDF, index, modèles téléchargés) vivent **hors** de l'image, dans des volumes. On peut reconstruire ou supprimer un conteneur sans rien perdre.
+
+**Réseau Compose**
+- Les services se joignent **par leur nom** : `http://ollama:11434`. Grâce à la configuration centralisée, il suffit de changer `RAG_OLLAMA_BASE_URL`, sans toucher au code. C'est le bénéfice de la Phase 1.5 !
+
+**Versions figées partout**
+- `requirements.txt` (dépendances directes), `requirements-lock.txt` (tout), `ollama/ollama:0.40.3` (et non `latest`). Un déploiement doit donner **le même résultat** dans 6 mois.
+
+**Sécurité de base**
+- Utilisateur non root dans le conteneur ; aucun secret dans l'image (`.dockerignore` exclut `.env`).
+
+### À retenir
+
+- N'optimiser que ce qui est mesuré.
+- README = porte d'entrée du projet, avec des chiffres vérifiables.
+- Docker : image reproductible, données dans des volumes, services reliés par leur nom, versions figées.
+- **Non vérifié** : la construction de l'image (Docker absent).
+
+---
+
+# Bilan du projet
+
+## Le RAG en 10 idées (mesurées sur ce projet)
+
+1. **Garbage in, garbage out** : nettoyer le PDF (en-têtes répétés, lignes coupées) avant tout le reste (Phase 2).
+2. **Le chunk est l'unité** qu'on vectorise, stocke, retrouve et cite ; il ne traverse jamais deux pages (Phase 3).
+3. **Mesurer le découpage** : bords propres (100 % avec « sentence ») et titres attachés (Phase 3).
+4. **Même modèle d'embeddings** pour indexer et pour chercher, vérifié par le code ; préfixes E5 (Phase 4).
+5. **Identifiants déterministes + upsert** : réindexer sans doublon (Phase 5).
+6. **Évaluer la recherche seule** : Recall@K, MRR. Ces mesures ont fait passer les chunks de 800 à 400 caractères (Phase 6).
+7. **Prompt explicite** : sources délimitées et numérotées, citations, abstention imposée, protection contre l'injection (Phase 7).
+8. **Pas de source → pas de LLM** ; une panne du LLM n'empêche pas la recherche (Phase 8).
+9. **Tester ET mesurer en conditions réelles** : les vrais serveurs ont révélé des problèmes invisibles en test (Phase 9).
+10. **Ne jamais présenter un résultat non mesuré comme prouvé** : la génération réelle reste à mesurer avec Ollama (Phases 7 à 12).
+
+## Ce qui reste à vérifier
+
+- Les réponses d'un **vrai LLM** : installer Ollama, puis `python -m scripts.evaluate_rag`.
+- La **construction Docker** : `docker compose up -d --build`.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -2644,6 +2739,7 @@ Navigateur ⇄ Streamlit (frontend/) ──HTTP──► FastAPI (app/api) ─�
 | 2026-10-15 | 11 | `test_answer_eval.py` (1re fois) | 1 failed (bug de la référence extractive) |
 | 2026-10-15 | 11 | `python -m pytest -q` | 176 passed, 2 deselected in 8.23s |
 | 2026-10-15 | 11 | `python -m pytest -q -m "" --cov=app --cov=frontend` | 178 passed in 25.89s ; couverture 95 % |
+| 2026-10-15 | 12 | vérification finale `python -m pytest -q -m ""` | 178 passed in 26.79s |
 
 ## Lire un résultat pytest
 
@@ -2843,6 +2939,11 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Référence (*baseline*) | Système simple qui fixe un plancher de comparaison | 11.2 |
 | Couverture de code | Part des instructions exécutées par les tests | 11.3 |
 | Pyramide des tests | Beaucoup de tests unitaires rapides, moins de tests d'intégration et de bout en bout | 11.3 |
+| Goulot d'étranglement | L'étape la plus lente, qui limite tout le système | 12.1 |
+| Docker / image / conteneur | Environnement complet figé / cette image en cours d'exécution | 12.3 |
+| Couche (*layer*) | Étape mise en cache d'une image Docker | 12.3 |
+| Volume | Stockage qui survit à la suppression d'un conteneur | 12.3 |
+| Docker Compose | Décrit et lance plusieurs services ensemble | 12.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
