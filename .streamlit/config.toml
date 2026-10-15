@@ -1,0 +1,9 @@
+# Configuration de Streamlit (lue automatiquement quand on lance l'interface depuis la racine).
+
+[browser]
+# Projet 100 % local : Streamlit n'envoie pas de statistiques d'usage
+gatherUsageStats = false
+
+[server]
+# Taille maximale d'un fichier envoyé, en Mo (cohérent avec RAG_MAX_UPLOAD_MB de l'API)
+maxUploadSize = 20

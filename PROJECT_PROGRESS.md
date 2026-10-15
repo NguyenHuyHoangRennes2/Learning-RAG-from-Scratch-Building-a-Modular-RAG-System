@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 10 — Interface Streamlit
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 10.1 | Client HTTP de l'API (`frontend/api_client.py`) | ✅ Terminée (2026-10-15, mode autonome) |
+| 10.2 | Interface (`frontend/streamlit_app.py`) : état, envoi/suppression de PDF, questions, sources citées | ✅ Terminée (2026-10-15, mode autonome) |
+| 10.3 | Tests (`MockTransport`, `AppTest`) + essai avec la vraie API ; statistiques Streamlit désactivées | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 10 terminée le 2026-10-15.**
+
 ## Phase 9 — API REST (FastAPI)
 
 | Étape | Titre | Statut |
@@ -189,6 +199,13 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/fakes.py` (modifié) | 9.3 | + `make_fake_pipeline`, `pdf_bytes` |
 | `tests/integration/test_api.py` | 9.3 | 16 tests (santé, envoi, doublon, 4 envois invalides, conflit de nom, traversée de chemin, question, 3 questions invalides, 503/502, suppression, OpenAPI) |
 | `app/ingestion/pdf_loader.py` (modifié) | 9.3 | PDF ouvert depuis la mémoire (`stream=`) : plus de fichier verrouillé sous Windows |
+| `requirements.txt` (modifié) | 10.1 | + `streamlit==1.66.0` |
+| `app/core/config.py`, `.env.example` (modifiés) | 10.1 | + `api_base_url="http://127.0.0.1:8000"` |
+| `frontend/__init__.py`, `frontend/api_client.py` | 10.1 | `RAGApiClient` (`health`, `list_documents`, `upload`, `delete`, `ask`), `ApiError` |
+| `frontend/streamlit_app.py` | 10.2 | Barre latérale (état, envoi, liste + suppression), conversation (`st.chat_input`), réponse + sources dépliables avec ✅ pour les sources citées |
+| `.streamlit/config.toml` | 10.3 | `gatherUsageStats = false`, `maxUploadSize = 20` |
+| `tests/unit/test_api_client.py` | 10.3 | 5 tests (`httpx.MockTransport`) |
+| `tests/integration/test_streamlit_app.py` | 10.3 | 1 test de fumée `AppTest` (API injoignable → message clair, pas d'exception) |
 | `app/generation/llm.py` (modifié) | 9.3 | Délai de connexion de 1 s (`CONNECT_TIMEOUT_SECONDS`) ; `ConnectTimeout` → `LLMUnavailableError` ; + 1 test (6 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
@@ -273,6 +290,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - `DELETE` supprime aussi le PDF de `data/raw/`, sinon il serait réindexé au prochain `build_index` ;
   - dépendances FastAPI sous la forme `Annotated[..., Depends(...)]` (forme recommandée ; règle Ruff B008) ; `create_app(settings, pipeline)` permet d'injecter un pipeline de test ;
   - **préchauffage** du modèle d'embeddings au démarrage du serveur, pour que la première question ne paie pas les 15 s de chargement.
+- **Interface découplée** (Phase 10) : Streamlit ne parle au RAG **que par l'API HTTP** (`frontend/api_client.py`). Elle n'importe jamais le pipeline, ChromaDB ni le modèle, seulement `app.core.config` pour l'adresse de l'API. On pourrait remplacer l'interface (React…) sans toucher au backend. Lancement : `python -m streamlit run frontend/streamlit_app.py` (`-m` rend `app` et `frontend` importables).
+- **Statistiques d'usage de Streamlit désactivées** (`.streamlit/config.toml`) : elles sont activées par défaut, ce qui est contraire au principe « 100 % local ».
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -522,6 +541,19 @@ Phase 9, vérifiée le 2026-10-15 :
 
   - Cause 1 : sous Windows, une connexion refusée coûte environ 2 s par adresse (mesuré : `localhost` 4,42 s, contre 2,26 s pour `127.0.0.1`, car `localhost` essaie IPv6 puis IPv4). Corrections : URL par défaut `127.0.0.1` + délai de **connexion** de 1 s (le délai de génération reste de 120 s).
   - Cause 2 : chargement paresseux du modèle à la 1re question. Correction : préchauffage au démarrage de l'API.
+- Commit `20328d8`
+
+Phase 10, vérifiée le 2026-10-15 :
+
+- `pip install streamlit` → 1.66.0 (+ pandas, pyarrow, altair… ; 118 paquets au total dans le venv) ; `pip check` : OK
+- 1re exécution : 1 échec. `AppTest.from_file("frontend/...")` résout un chemin relatif **depuis le fichier de test**. Corrigé avec un chemin absolu depuis `PROJECT_ROOT`.
+- `ruff check` : OK ; `python -m pytest -q` : **170 passed, 2 deselected** (7,9 s)
+- **Essai réel** (API uvicorn sur :8000 + Streamlit sur :8501, vrai index) :
+  - `GET :8501/_stcore/health` → `ok`
+  - Interface pilotée par `AppTest` contre la vraie API : aucune exception ; légende « 3 document(s), 28 chunk(s) indexé(s) » ; avertissement « LLM « qwen2.5:3b » indisponible… » ; liste des 3 PDF (9, 9 et 10 chunks)
+  - Question saisie dans `chat_input` → message « Erreur 503 : Ollama est injoignable à http://127.0.0.1:11434… » (attendu, Ollama absent)
+- Le 1er journal de Streamlit affichait « Collecting usage statistics » → `.streamlit/config.toml` ajouté ; au relancement, ce message n'apparaît plus (0 occurrence), et `/_stcore/health` répond `ok`.
+- **Non vérifié** : l'affichage d'une vraie réponse générée (Ollama absent). La mise en forme des réponses (`render_answer`) n'est exercée qu'à travers le code, sans rendu réel.
 
 ## Données de travail
 
@@ -543,4 +575,4 @@ Phase 9, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 10 — Interface Streamlit.
+Phase 11 — Tests et évaluation du RAG (réponses).

@@ -31,6 +31,7 @@
 - [Phase 7 — Intégration du LLM (Ollama)](#phase-7--intégration-du-llm-ollama)
 - [Phase 8 — Pipeline RAG complet](#phase-8--pipeline-rag-complet)
 - [Phase 9 — API REST (FastAPI)](#phase-9--api-rest-fastapi)
+- [Phase 10 — Interface Streamlit](#phase-10--interface-streamlit)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -2385,6 +2386,82 @@ uvicorn app.main:app --reload
 
 ---
 
+# Phase 10 — Interface Streamlit
+
+**Objectif de la phase** : une interface web pour envoyer des PDF, poser des questions et **vérifier** les réponses grâce aux sources citées.
+
+> Phase réalisée en **mode autonome** le 2026-10-15.
+
+**Lancer l'application complète** (deux terminaux, venv activé, depuis la racine) :
+```powershell
+# Terminal 1 : l'API
+uvicorn app.main:app
+# Terminal 2 : l'interface → http://localhost:8501
+python -m streamlit run frontend/streamlit_app.py
+```
+
+## Étape 10.1 — Client HTTP
+
+- Installé et figé : `streamlit==1.66.0`.
+- `frontend/api_client.py` : `RAGApiClient` (une méthode par route) et `ApiError`, qui garde le code HTTP et le message `detail` de FastAPI.
+- `config.py` : `api_base_url = "http://127.0.0.1:8000"`.
+
+**Architecture client / serveur**
+```
+Navigateur ⇄ Streamlit (frontend/) ──HTTP──► FastAPI (app/api) ─► RAGPipeline ─► ChromaDB / E5 / Ollama
+```
+- L'interface ne connaît **que l'API**, pas le pipeline. On pourrait la remplacer par une application React ou mobile sans toucher au backend. Plusieurs interfaces pourraient aussi partager le même serveur.
+
+## Étape 10.2 — L'interface
+
+- **Barre latérale** : état (documents, chunks), avertissement si le LLM est indisponible, envoi d'un PDF (`st.file_uploader` + bouton), liste des documents avec un bouton 🗑️.
+- **Zone principale** : conversation (`st.chat_message`, `st.chat_input`). Chaque réponse a un volet dépliable « Sources » : `[n] fichier, p. X — score — ✅ citée`, avec le texte exact du passage.
+
+### Notions apprises
+
+**Le modèle d'exécution de Streamlit**
+- À **chaque** interaction (clic, saisie), Streamlit **relance tout le script** de haut en bas.
+- Conséquences :
+  - `st.session_state` conserve des données entre deux relances (ici, l'historique des échanges) ;
+  - `@st.cache_resource` crée un objet coûteux **une seule fois** (ici, le client HTTP) ;
+  - les boutons créés dans une boucle ont besoin d'une `key` unique ;
+  - `st.rerun()` force une relance, par exemple pour rafraîchir la liste après une suppression.
+
+**Transparence des sources**
+- L'utilisateur voit **quels passages** ont été fournis au LLM et **lesquels** sont cités. Il peut lire le texte exact et vérifier la réponse, au lieu de faire confiance aveuglément.
+
+## Étape 10.3 — Tests et essai réel
+
+### Tests (pytest)
+
+| Fichier | Test | Ce qu'il vérifie |
+|---|---|---|
+| `tests/unit/test_api_client.py` | `test_ask_posts_the_question_as_json` | `POST /ask` avec `{"question": ...}` |
+| | `test_upload_sends_a_multipart_file` | Nom et contenu dans le corps multipart |
+| | `test_http_errors_carry_the_api_detail` | 503 → `ApiError("Erreur 503 : Ollama est injoignable")`, `status_code=503` |
+| | `test_unreachable_api_gives_a_helpful_message` | API éteinte → message « uvicorn app.main:app » |
+| | `test_delete_and_list_use_the_right_routes` | `GET /documents`, `DELETE /documents/abc123` |
+| `tests/integration/test_streamlit_app.py` | `test_app_renders_and_reports_unreachable_api` | `AppTest` : le script s'exécute sans exception, affiche le titre et explique que l'API est injoignable |
+
+**Techniques utilisées :**
+- **`AppTest`** (`streamlit.testing.v1`) : il exécute le script Streamlit **sans navigateur** et donne accès aux éléments affichés (`app.title`, `app.sidebar.error`, `app.chat_input`…).
+- **Test de fumée (*smoke test*)** : on vérifie seulement que « ça démarre sans fumée » (pas d'exception, éléments principaux présents), pas chaque détail de l'affichage.
+- **Piège rencontré** : `AppTest.from_file` résout un chemin relatif **depuis le fichier de test**, d'où le chemin absolu construit avec `PROJECT_ROOT`.
+
+### Essai réel
+
+- API (:8000) + Streamlit (:8501) lancés pour de vrai. L'interface, pilotée par `AppTest` contre la vraie API, affiche « 3 document(s), 28 chunk(s) indexé(s) », les 3 PDF, l'avertissement « LLM indisponible » et, après une question, « Erreur 503 : Ollama est injoignable… ».
+- **Vie privée** : le journal de Streamlit indiquait « Collecting usage statistics ». C'est contraire à notre principe « 100 % local ». `.streamlit/config.toml` contient maintenant `gatherUsageStats = false` (vérifié : le message n'apparaît plus).
+- `python -m pytest -q` → **170 passed, 2 deselected**.
+
+### À retenir
+
+- Streamlit relance tout le script à chaque interaction : `session_state` pour la mémoire, `cache_resource` pour les objets coûteux.
+- L'interface passe par l'API : un **seul** chemin vers le RAG, déjà testé.
+- Toujours **lire les journaux** des outils : on y découvre des comportements par défaut (ici, de la télémétrie).
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -2440,7 +2517,9 @@ uvicorn app.main:app --reload
 | `tests/unit/test_llm.py` | `app/generation/llm.py` | 6 | 7.3, 9.3 | [voir](#étape-73--le-client-ollama) |
 | `tests/integration/test_rag_pipeline.py` | `app/rag/pipeline.py` (Q/R) | 7 | 8.2 | [voir](#étape-82--le-pipeline-de-questions-réponses) |
 | `tests/integration/test_api.py` | `app/api/`, `app/main.py` | 16 | 9.3 | [voir](#étape-93--tests-et-vrai-serveur) |
-| **Total** | | **166** (116 unitaires + 48 d'intégration rapides + 2 lents) | | |
+| `tests/unit/test_api_client.py` | `frontend/api_client.py` | 5 | 10.3 | [voir](#étape-103--tests-et-essai-réel) |
+| `tests/integration/test_streamlit_app.py` | `frontend/streamlit_app.py` | 1 | 10.3 | [voir](#étape-103--tests-et-essai-réel) |
+| **Total** | | **172** (121 unitaires + 49 d'intégration rapides + 2 lents) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -2470,6 +2549,8 @@ uvicorn app.main:app --reload
 | 2026-10-15 | 8 | `python -m pytest -q` | 147 passed, 2 deselected in 3.39s |
 | 2026-10-15 | 9 | `python -m pytest -q` (1re fois) | **1 failed** (`WinError 32`, PDF verrouillé : vrai bug) |
 | 2026-10-15 | 9 | après corrections | 164 passed, 2 deselected in 5.03s |
+| 2026-10-15 | 10 | `python -m pytest -q` (1re fois) | 1 failed (chemin relatif d'`AppTest`) |
+| 2026-10-15 | 10 | après correction | 170 passed, 2 deselected in 7.89s |
 
 ## Lire un résultat pytest
 
@@ -2655,6 +2736,13 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | `TestClient` | Envoie des requêtes HTTP à l'application en mémoire | 9.3 |
 | Démarrage à froid | Lenteur du premier appel (chargement d'un modèle) ; corrigée par préchauffage | 9.3 |
 | Délai de connexion | Temps maximal pour établir la connexion, distinct du temps de réponse | 9.3 |
+| Streamlit | Bibliothèque d'interfaces web en Python pur | 10.1 |
+| Client / serveur | L'interface (client) appelle l'API (serveur) par HTTP | 10.1 |
+| `st.session_state` | Mémoire conservée entre deux relances du script | 10.2 |
+| `st.cache_resource` | Crée un objet coûteux une seule fois | 10.2 |
+| `AppTest` | Exécute un script Streamlit sans navigateur, pour le tester | 10.3 |
+| Test de fumée | Vérifie seulement que l'application démarre sans erreur | 10.3 |
+| Télémétrie | Statistiques d'usage envoyées par un logiciel à son éditeur | 10.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

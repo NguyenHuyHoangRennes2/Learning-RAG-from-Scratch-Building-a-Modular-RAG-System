@@ -100,6 +100,10 @@ class Settings(BaseSettings):
     # Taille maximale d'un PDF envoyé à l'API, en mégaoctets (protège le disque et la mémoire)
     max_upload_mb: int = Field(default=20, gt=0)
 
+    # --- Interface Streamlit (Phase 10) ---
+    # Adresse de l'API FastAPI appelée par l'interface
+    api_base_url: str = "http://127.0.0.1:8000"
+
     @model_validator(mode="after")
     def _check_chunk_overlap(self) -> "Settings":
         """Vérifie une règle qui porte sur DEUX champs : overlap < size."""

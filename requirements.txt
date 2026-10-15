@@ -24,3 +24,7 @@ fastapi==0.143.1
 uvicorn==0.54.0
 # Lecture des formulaires multipart : indispensable pour l'envoi de fichiers PDF (UploadFile)
 python-multipart==0.0.32
+
+# --- Interface web (Phase 10, ajoutée le 2026-10-15) ---
+# Interface en Python pur ; elle ne parle au RAG QUE par l'API HTTP (httpx)
+streamlit==1.66.0
