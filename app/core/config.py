@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     # Stratégie de découpage utilisée par défaut
     chunk_strategy: ChunkStrategy = "sentence"
 
+    # --- Embeddings (Phase 4) ---
+    # Modèle multilingue (nos PDF sont en français) : 384 dimensions, 512 tokens max
+    embedding_model_name: str = "intfloat/multilingual-e5-small"
+
+    # Matériel de calcul : "cpu" (le GPU de 4 Go est réservé à Ollama)
+    embedding_device: str = "cpu"
+
+    # Nombre de textes vectorisés en une seule passe du modèle
+    embedding_batch_size: int = Field(default=32, gt=0)
+
     @model_validator(mode="after")
     def _check_chunk_overlap(self) -> "Settings":
         """Vérifie une règle qui porte sur DEUX champs : overlap < size."""

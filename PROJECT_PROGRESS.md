@@ -4,7 +4,19 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Phase en cours
 
-**Phase 3 — Chunking**
+> **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
+
+## Phase 4 — Embeddings
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 4.1 | Choix du modèle et paramètres dans la configuration | ✅ Terminée (2026-10-15, mode autonome) |
+| 4.2 | Module `app/embeddings/embedding_model.py` (préfixes E5, normalisation, cosinus) | ✅ Terminée (2026-10-15, mode autonome) |
+| 4.3 | Mesures réelles (tokens, vitesse, similarités) et tests avec le vrai modèle | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 4 terminée le 2026-10-15.**
+
+## Phase 3 — Chunking
 
 | Étape | Titre | Statut |
 |---|---|---|
@@ -15,8 +27,6 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) + correction des titres orphelins | ✅ Terminée (2026-10-15, mode autonome) |
 
 **Phase 3 terminée le 2026-10-15.**
-
-> **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
 ## Phase 2 — Ingestion
 
@@ -85,6 +95,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `tests/integration/test_chunking_pipeline.py` | 3.5 | 4 tests d'intégration : PDF → chargeur → nettoyage → chunks → statistiques |
 | `app/ingestion/chunker.py`, `text_cleaner.py` (modifiés) | 3.5 | + `attach_headings()` ; `_is_heading` → `is_heading` (publique) |
 | `tests/unit/test_chunker.py` (modifié) | 3.5 | + 4 tests sur les titres (29 au total) |
+| `app/core/config.py`, `.env.example`, `tests/unit/test_config.py` (modifiés) | 4.1 | + `embedding_model_name`, `embedding_device`, `embedding_batch_size` ; + 1 test (9 au total) |
+| `app/embeddings/embedding_model.py` | 4.2 | `EmbeddingModel` (`embed_documents`, `embed_query`, `dimension`, chargement paresseux), `prefixes_for_model`, `cosine_similarity`, protocole `TextEncoder` |
+| `tests/unit/test_embedding_model.py` | 4.2 | 11 tests avec un faux encodeur (aucun téléchargement) |
+| `pytest.ini` | 4.3 | Marqueur `slow` ; les tests lents sont exclus par défaut (`-m "not slow"`) |
+| `tests/integration/test_embeddings_real_model.py` | 4.3 | 2 tests `slow` avec le vrai modèle (dimension, norme, pertinence) |
+| `scripts/inspect_embeddings.py` | 4.3 | Mesures : tokens par chunk, troncature, vitesse, similarités |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -124,6 +140,13 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - les phrases sont recollées avec une espace, donc un titre se retrouve collé à la phrase qui le suit.
   Pas de NLTK ni de spaCy : une dépendance lourde n'est pas justifiée pour des textes propres.
 - **`chunk_page(page, size, overlap, strategy)`** remplace `chunk_page_fixed` (3.3) : un seul point d'entrée et une table `SPLITTERS` (nom → fonction). Le type `ChunkStrategy` est importé depuis `config.py`, pour n'être défini qu'une fois.
+- **Modèle d'embeddings : `intfloat/multilingual-e5-small`** (4.1). Il est multilingue (nos PDF sont en français), produit **384 dimensions**, accepte **512 tokens** et pèse environ 470 Mo. Il tourne sur CPU.
+  - Rejeté : `paraphrase-multilingual-MiniLM-L12-v2`. Sa limite de 128 tokens aurait **tronqué** nos chunks (mesurés ensuite à 170 tokens en moyenne).
+  - Rejeté : `BAAI/bge-m3`. Il est trop lourd (environ 2,2 Go) pour 8 Go de RAM partagés avec Ollama.
+- **Préfixes E5** : `"query: "` pour les questions, `"passage: "` pour les chunks. Ils sont ajoutés **dans** `EmbeddingModel`, que l'appelant ne peut donc pas oublier. La fonction `prefixes_for_model()` les désactive pour un modèle non-E5.
+- **Vecteurs normalisés** (`normalize_embeddings=True`) : la norme vaut 1, donc cosinus = produit scalaire. **Métrique de similarité : cosinus.**
+- **Chargement paresseux** : le modèle (15 s) n'est chargé qu'au premier usage. **Injection** d'un encodeur (`encoder=`), qui permet des tests unitaires instantanés avec un faux encodeur. Le `Protocol` `TextEncoder` décrit ce dont on a besoin, sans dépendre de la classe `SentenceTransformer`.
+- **Tests lents séparés** : ceux qui chargent le vrai modèle sont marqués `slow` et exclus par défaut (`pytest.ini`). On les lance avec `python -m pytest -m slow`.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -287,6 +310,19 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   | Fins propres | 93 % → **100 %** | 86 % → **100 %** |
 
 - `python -m pytest tests -q` : **82 passed** ; `ruff check` : OK
+- Commit `798dac1`
+
+Phase 4, vérifiée le 2026-10-15 :
+
+- Environnement : `ollama` **absent**, `docker` **absent**, Hugging Face accessible (HTTP 200). Premier téléchargement du modèle : 43,6 s ; chargements suivants depuis le cache : 15,6 s. Avertissement Windows sans conséquence : « symlinks not supported » (le cache Hugging Face copie les fichiers au lieu de créer des liens).
+- Inspection du modèle : `max_seq_length = 512`, `similarity_fn_name = cosine`, `prompts = {'query': '', 'document': ''}`. Le modèle ne déclare **pas** ses préfixes, d'où leur ajout manuel.
+- `ruff check` : OK ; `python -m pytest -q` : **94 passed, 2 deselected** ; `python -m pytest -m slow -q` : **2 passed** en 17,3 s
+- `python -m scripts.inspect_embeddings` (14 chunks, « sentence » 800/150) :
+  - dimension 384 ; tokens par chunk : min 95, **moyenne 170, max 209** ; **0 chunk tronqué** (limite 512) ;
+  - **3,98 caractères par token** : l'estimation de 3.1 (800 car. ≈ 200 tokens) est confirmée ;
+  - vectorisation : 0,60 s pour 14 chunks (**43 ms/chunk** sur CPU) ;
+  - question « Pourquoi faut-il normaliser les vecteurs ? » : les 3 meilleurs chunks viennent tous du document 2 (embeddings), avec des scores de 0,833, 0,830 et 0,826 ; le moins proche obtient 0,784.
+- Constat : les scores cosinus de E5 sont **compressés** (environ 0,78 à 0,84) : même un chunk hors sujet obtient plus de 0,78. Un seuil absolu de « pertinence » devra donc être **calibré** sur nos données (Phase 8), et non fixé à 0,5 par intuition.
 
 ## Données de travail
 
@@ -303,4 +339,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-Décision sur les titres orphelins (corriger maintenant ou plus tard), puis validation de 3.5 → fin de la Phase 3 → Phase 4 (embeddings).
+Phase 5 — Base vectorielle ChromaDB.

@@ -69,6 +69,15 @@ def test_non_positive_chunk_size_is_rejected(monkeypatch: pytest.MonkeyPatch) ->
         make_settings()
 
 
+def test_embedding_default_values() -> None:
+    # Crée la configuration sans .env ni variable d'environnement
+    settings = make_settings()
+
+    # Modèle multilingue, sur CPU, lots de 32
+    assert settings.embedding_model_name == "intfloat/multilingual-e5-small"
+    assert (settings.embedding_device, settings.embedding_batch_size) == ("cpu", 32)
+
+
 def test_unknown_chunk_strategy_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     # "semantic" ne fait pas partie des stratégies autorisées (Literal)
     monkeypatch.setenv("RAG_CHUNK_STRATEGY", "semantic")

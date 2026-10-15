@@ -25,6 +25,7 @@
   - [3.3 — Chunker « fixed »](#étape-33--chunker-stratégie-fixed)
   - [3.4 — Chunker « sentence »](#étape-34--chunker-stratégie-sentence)
   - [3.5 — Comparaison des stratégies](#étape-35--comparaison-des-stratégies)
+- [Phase 4 — Embeddings](#phase-4--embeddings)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1636,6 +1637,177 @@ python -m pytest tests/integration -v
 
 ---
 
+# Phase 4 — Embeddings
+
+**Objectif de la phase** : transformer chaque chunk (et chaque question) en un **vecteur de nombres** qui représente son **sens**, pour pouvoir ensuite retrouver les passages proches d'une question par un simple calcul.
+
+> Phase réalisée en **mode autonome** le 2026-10-15 (à ma demande : terminer le projet puis évaluer l'ensemble).
+
+| Étape | Titre |
+|---|---|
+| 4.1 | Choix du modèle et paramètres dans la configuration |
+| 4.2 | Module `embedding_model.py` (préfixes E5, normalisation, cosinus) |
+| 4.3 | Mesures réelles et tests avec le vrai modèle |
+
+## Étape 4.1 — Choix du modèle et configuration
+
+### Ce qui a été fait
+
+- Vérifié l'environnement : Hugging Face est accessible ; **Ollama et Docker ne sont pas installés** (ce sera important en Phases 7 et 12).
+- Comparé trois modèles candidats :
+
+  | Modèle | Dimensions | Limite (tokens) | Taille | Verdict |
+  |---|---|---|---|---|
+  | `paraphrase-multilingual-MiniLM-L12-v2` | 384 | **128** | ~470 Mo | ❌ Tronquerait nos chunks (170 tokens en moyenne, mesuré en 4.3) |
+  | **`intfloat/multilingual-e5-small`** | **384** | **512** | ~470 Mo | ✅ **Choisi** : multilingue, assez long, léger |
+  | `BAAI/bge-m3` | 1024 | 8192 | ~2,2 Go | ❌ Trop lourd pour 8 Go de RAM partagés avec Ollama |
+
+- Ajouté à `app/core/config.py` : `embedding_model_name`, `embedding_device="cpu"`, `embedding_batch_size=32` (+ `.env.example`, + 1 test dans `test_config.py`).
+
+### Notions apprises
+
+**Embedding (plongement vectoriel)**
+- **Intuition** : on place chaque texte comme un **point dans un espace** à beaucoup de dimensions. Deux textes qui **parlent de la même chose** sont placés **près l'un de l'autre**, même s'ils n'utilisent pas les mêmes mots (« voiture » et « automobile »).
+- **Formule** : un modèle $f$ transforme un texte $t$ en vecteur : $\mathbf{v} = f(t) \in \mathbb{R}^{d}$.
+- **Variables** : $t$ = le texte ; $d$ = la dimension (ici **384**) ; $\mathbf{v} = (v_1, \dots, v_{384})$ = 384 nombres réels.
+- **Exemple simplifié (d = 3)** : « chat » → $(0{,}9;\ 0{,}1;\ 0{,}0)$, « chaton » → $(0{,}8;\ 0{,}2;\ 0{,}1)$, « impôts » → $(0{,}0;\ 0{,}1;\ 0{,}9)$. « chat » et « chaton » sont proches, « impôts » est loin.
+- **Interprétation** : chaque composante n'a pas de sens isolé, c'est la **position globale** qui compte.
+- **Rôle dans le RAG** : on vectorise tous les chunks une fois (indexation), puis chaque question. On cherche ensuite les chunks dont le vecteur est le plus proche de celui de la question.
+
+**Règle d'or : le même modèle pour indexer et pour chercher**
+- Deux modèles différents produisent des espaces différents : comparer leurs vecteurs n'a **aucun sens**, même si les dimensions sont égales.
+- **Conséquence pratique** : changer de modèle impose de **réindexer** tous les documents (noté dans `.env.example`).
+
+**Token et limite de longueur**
+- Le modèle découpe le texte en **tokens** (morceaux de mots) et n'en lit qu'un nombre limité (512 ici). Au-delà, le texte est **ignoré** sans erreur : c'est la **troncature**, un bug silencieux.
+
+## Étape 4.2 — Module `embedding_model.py`
+
+### Ce qui a été fait
+
+- Créé `app/embeddings/embedding_model.py` :
+  - `EmbeddingModel(model_name, device, batch_size, encoder=None)` ;
+  - `embed_documents(texts)` : ajoute `"passage: "` et renvoie une liste de vecteurs ;
+  - `embed_query(question)` : ajoute `"query: "` et renvoie un vecteur ;
+  - `dimension` : propriété (384) ;
+  - `prefixes_for_model(name)` : préfixes E5, ou aucun pour les autres modèles ;
+  - `cosine_similarity(a, b)` : calcul « à la main », pour comprendre et pour tester.
+- Créé `tests/unit/test_embedding_model.py` (11 tests) avec un **faux encodeur** : aucun téléchargement, et les tests s'exécutent en quelques millisecondes.
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_embedding_model.py` · **Module testé** : `app/embeddings/embedding_model.py`
+
+| Test | Ce qu'il vérifie |
+|---|---|
+| `test_cosine_similarity_worked_example` | $(1,2,2)$ et $(2,1,2)$ → $8/9$ (exemple ci-dessous) |
+| `test_cosine_similarity_extreme_values` | Même direction → 1 ; perpendiculaires → 0 ; opposés → −1 |
+| `test_cosine_similarity_rejects_invalid_vectors` | Dimensions différentes ou vecteur nul → `ValueError` |
+| `test_e5_models_use_query_and_passage_prefixes` | E5 → `("query: ", "passage: ")` |
+| `test_other_models_use_no_prefix` | Autre modèle → `("", "")` |
+| `test_documents_are_prefixed_and_normalized` | L'encodeur reçoit `"passage: ..."`, `normalize_embeddings=True`, `batch_size=8` |
+| `test_query_is_prefixed_and_returns_one_vector` | L'encodeur reçoit `"query: ..."` ; un seul vecteur renvoyé |
+| `test_empty_document_list_does_not_call_the_encoder` | `[]` → `[]`, sans charger le modèle |
+| `test_blank_question_is_rejected` | Question vide → `ValueError` |
+| `test_dimension_comes_from_the_encoder` | `dimension` lue sur le modèle |
+| `test_vectors_are_plain_python_floats` | Listes de `float` Python (compatibles ChromaDB et JSON) |
+
+**Techniques utilisées :**
+- **Faux objet (*fake*)** : `FakeEncoder` imite `SentenceTransformer` (mêmes méthodes) et **mémorise ses appels**. On vérifie ainsi *ce que notre code lui envoie* (préfixes, options).
+- **Injection de dépendance** : on passe l'encodeur au constructeur (`encoder=FakeEncoder()`) au lieu de le créer à l'intérieur.
+- **`pytest.approx`** : compare des nombres à virgule avec une tolérance ($8/9 = 0{,}888\ldots$).
+
+### Notions apprises
+
+**Similarité cosinus**
+- **Intuition** : on mesure l'**angle** entre deux vecteurs, pas leur longueur. Deux flèches qui pointent dans la même direction parlent du même sujet.
+- **Formule** :
+  $$\cos(\theta) = \frac{\mathbf{a} \cdot \mathbf{b}}{\lVert \mathbf{a} \rVert \times \lVert \mathbf{b} \rVert} = \frac{\sum_{i=1}^{d} a_i b_i}{\sqrt{\sum_i a_i^2} \times \sqrt{\sum_i b_i^2}}$$
+- **Variables** : $\mathbf{a}, \mathbf{b}$ = deux vecteurs ; $a_i$ = $i$-ème composante ; $\mathbf{a} \cdot \mathbf{b}$ = produit scalaire ; $\lVert \mathbf{a} \rVert$ = norme (longueur) ; $d$ = dimension.
+- **Exemple numérique** : $\mathbf{a} = (1, 2, 2)$, $\mathbf{b} = (2, 1, 2)$.
+  1. Produit scalaire : $1 \times 2 + 2 \times 1 + 2 \times 2 = 2 + 2 + 4 = 8$.
+  2. Normes : $\lVert \mathbf{a} \rVert = \sqrt{1 + 4 + 4} = 3$ ; $\lVert \mathbf{b} \rVert = \sqrt{4 + 1 + 4} = 3$.
+  3. $\cos(\theta) = 8 / (3 \times 3) = 8/9 \approx 0{,}889$.
+- **Interprétation** : 0,889 est proche de 1, donc les vecteurs pointent presque dans la même direction (angle d'environ 27°). Valeurs repères : **1** = même direction, **0** = sans rapport, **−1** = opposés.
+- **Rôle dans le RAG** : c'est **le score** qui classe les chunks pour une question. Les $K$ chunks au plus grand cosinus sont envoyés au LLM.
+
+**Normalisation d'un vecteur**
+- **Intuition** : on ramène chaque flèche à une **longueur de 1**, sans changer sa direction.
+- **Formule** : $\hat{\mathbf{v}} = \dfrac{\mathbf{v}}{\lVert \mathbf{v} \rVert}$.
+- **Exemple** : $\mathbf{v} = (3, 4)$ → $\lVert \mathbf{v} \rVert = \sqrt{9 + 16} = 5$ → $\hat{\mathbf{v}} = (0{,}6;\ 0{,}8)$, et l'on vérifie $\sqrt{0{,}36 + 0{,}64} = 1$.
+- **Conséquence** : si $\lVert \mathbf{a} \rVert = \lVert \mathbf{b} \rVert = 1$, alors $\cos(\theta) = \mathbf{a} \cdot \mathbf{b}$. **Le cosinus devient un simple produit scalaire**, plus rapide à calculer pour la base vectorielle.
+- **Dans le code** : `normalize_embeddings=True`.
+
+**Distance euclidienne (pour comparaison)**
+- **Formule** : $\text{dist}(\mathbf{a}, \mathbf{b}) = \sqrt{\sum_i (a_i - b_i)^2}$.
+- **Exemple** : $(1,2,2)$ et $(2,1,2)$ → $\sqrt{1 + 1 + 0} = \sqrt{2} \approx 1{,}414$.
+- **Lien avec le cosinus** : pour des vecteurs normalisés, $\text{dist}^2 = 2 - 2\cos(\theta)$. Les deux mesures classent alors les chunks **dans le même ordre**. ChromaDB renvoie une **distance cosinus** $= 1 - \cos(\theta)$ (Phase 5).
+
+**Préfixes E5 (modèle asymétrique)**
+- E5 a été entraîné avec `"query: "` devant les questions et `"passage: "` devant les documents. Une question courte et un passage long ne se ressemblent pas en surface : le préfixe indique au modèle **quel rôle** joue le texte.
+- Les oublier ne provoque **aucune erreur**, mais dégrade la recherche. Le module les ajoute donc lui-même.
+
+**Chargement paresseux (*lazy loading*)**
+- Le modèle (15 s de chargement) n'est chargé **qu'au premier usage**, et l'`import sentence_transformers` est fait **dans** la fonction. Créer un `EmbeddingModel` est instantané.
+
+**`Protocol` (typage structurel)**
+- `TextEncoder` décrit les méthodes attendues (`encode`, `get_embedding_dimension`). Tout objet qui les possède convient, **sans héritage** : c'est le « *duck typing* » vérifié par l'IDE.
+
+## Étape 4.3 — Mesures réelles
+
+### Ce qui a été fait
+
+- Créé `scripts/inspect_embeddings.py` et `tests/integration/test_embeddings_real_model.py` (2 tests **lents**).
+- Créé `pytest.ini` : les tests marqués `slow` sont **exclus par défaut**, pour que la suite reste rapide.
+- Commandes :
+  ```powershell
+  python -m pytest -q            # → 94 passed, 2 deselected (0.66 s)
+  python -m pytest -m slow -q    # → 2 passed (17.3 s : chargement du vrai modèle)
+  python -m scripts.inspect_embeddings
+  ```
+- **Résultats réels** :
+  ```
+  Dimension : 384  |  limite : 512 tokens       Chargement : 15.6 s
+  Chunks : 14 (stratégie sentence, 800/150)
+  Tokens par chunk : min 95, moyenne 170, max 209
+  Caractères par token (moyenne) : 3.98
+  Chunks tronqués (> 512 tokens) : 0
+  Vectorisation de 14 chunks : 0.60 s (43 ms/chunk)
+  Question : 'Pourquoi faut-il normaliser les vecteurs ?'
+    0.833  b2304beac24baf07-p1-c2   (document 2 : embeddings)
+    0.830  b2304beac24baf07-p1-c1
+    0.826  b2304beac24baf07-p1-c0
+    0.784  49289fd3ade5e236-p1-c0  (le moins proche)
+  ```
+
+### Ce que j'en conclus
+
+1. **Pas de troncature** : 209 tokens au maximum, contre une limite de 512. On pourrait même agrandir les chunks.
+2. **3,98 caractères par token** : l'estimation de 3.1 (800 car. ≈ 200 tokens) est **confirmée par la mesure**.
+3. Les 3 chunks les plus proches viennent bien du document sur les embeddings : la recherche sémantique fonctionne.
+4. **Les scores E5 sont compressés** : même le chunk le moins pertinent obtient 0,784. Un seuil comme « cos > 0,5 = pertinent » ne filtrerait **rien**. Il faudra calibrer le seuil sur nos données (Phase 8).
+
+### Tests (pytest)
+
+| Test (`slow`) | Ce qu'il vérifie |
+|---|---|
+| `test_vectors_have_the_documented_dimension_and_unit_norm` | 384 dimensions et norme = 1 (à $10^{-4}$ près) |
+| `test_question_is_closer_to_the_relevant_passage` | Une question sur les embeddings est plus proche d'un passage sur le cosinus que d'une recette de tarte |
+
+**Techniques utilisées :**
+- **Marqueur `@pytest.mark.slow`** (via `pytestmark` = pour tout le fichier) et `addopts = -m "not slow"` dans `pytest.ini`.
+- **Fixture `scope="module"`** : le modèle est chargé **une seule fois** pour tous les tests du fichier.
+
+### À retenir
+
+- Embedding = position dans un espace où la proximité correspond à la proximité de sens.
+- Cosinus = angle ; avec des vecteurs normalisés, cosinus = produit scalaire.
+- Même modèle pour indexer et chercher ; préfixes E5 obligatoires.
+- **Mesurer** les tokens : 170 en moyenne, aucune troncature.
+- Scores E5 serrés : ne pas fixer de seuil « au feeling ».
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1671,7 +1843,7 @@ python -m pytest tests/integration -v
 
 | Fichier | Module testé | Nb | Étape | Détail |
 |---|---|---|---|---|
-| `tests/unit/test_config.py` | `app/core/config.py` | 8 | 1.5-A, 3.1 | [voir 1.5-A](#étape-15-a--configuration-centralisée), [voir 3.1](#étape-31--principes-du-chunking-et-paramètres) |
+| `tests/unit/test_config.py` | `app/core/config.py` | 9 | 1.5-A, 3.1, 4.1 | [voir 1.5-A](#étape-15-a--configuration-centralisée), [voir 3.1](#étape-31--principes-du-chunking-et-paramètres) |
 | `tests/unit/test_logging_config.py` | `app/core/logging_config.py` | 4 | 1.5-B | [voir](#étape-15-b--logging) |
 | `tests/unit/test_models.py` | `app/models.py` | 12 | 2.2, 3.2 | [voir 2.2](#étape-22--structure-de-données-dune-page), [voir 3.2](#étape-32--structure-de-données-chunk) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
@@ -1679,7 +1851,9 @@ python -m pytest tests/integration -v
 | `tests/unit/test_chunker.py` | `app/ingestion/chunker.py` | 29 | 3.3, 3.4, 3.5 | [voir 3.3](#étape-33--chunker-stratégie-fixed), [voir 3.4](#étape-34--chunker-stratégie-sentence) |
 | `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
 | `tests/integration/test_chunking_pipeline.py` | `pdf_loader` + `text_cleaner` + `chunker` + `compare_chunking` | 4 | 3.5 | [voir](#étape-35--comparaison-des-stratégies) |
-| **Total** | | **82** (76 unitaires + 6 d'intégration) | | |
+| `tests/unit/test_embedding_model.py` | `app/embeddings/embedding_model.py` | 11 | 4.2 | [voir](#étape-42--module-embedding_modelpy) |
+| `tests/integration/test_embeddings_real_model.py` | vrai modèle E5 | 2 (`slow`) | 4.3 | [voir](#étape-43--mesures-réelles) |
+| **Total** | | **96** (88 unitaires + 6 d'intégration rapides + 2 lents) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1701,6 +1875,8 @@ python -m pytest tests/integration -v
 | 2026-10-15 | 3.4 | `python -m pytest tests -q` | 74 passed in 0.51s |
 | 2026-10-15 | 3.5 | `python -m pytest tests -q` | 78 passed in 0.63s |
 | 2026-10-15 | 3.5 | après correction des titres orphelins | 82 passed in 0.63s |
+| 2026-10-15 | 4 | `python -m pytest -q` | 94 passed, 2 deselected in 0.66s |
+| 2026-10-15 | 4 | `python -m pytest -m slow -q` | 2 passed in 17.32s |
 
 ## Lire un résultat pytest
 
@@ -1828,6 +2004,20 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Redondance | Caractères stockés / caractères du texte d'origine | 3.5 |
 | Titre orphelin | Titre placé en fin de chunk, séparé de son contenu | 3.5 |
 | `argparse` | Module standard de lecture des options de ligne de commande | 3.5 |
+| Embedding | Vecteur de nombres qui représente le sens d'un texte | 4.1 |
+| Dimension | Nombre de composantes d'un vecteur (384 ici) | 4.1 |
+| Similarité cosinus | cos de l'angle entre deux vecteurs : 1 = même sens, 0 = sans rapport | 4.2 |
+| Produit scalaire | $\sum a_i b_i$ ; égal au cosinus si les vecteurs sont normalisés | 4.2 |
+| Norme | Longueur d'un vecteur : $\sqrt{\sum v_i^2}$ | 4.2 |
+| Normalisation | Diviser un vecteur par sa norme pour ramener sa longueur à 1 | 4.2 |
+| Distance euclidienne | $\sqrt{\sum (a_i - b_i)^2}$ ; même classement que le cosinus si normalisé | 4.2 |
+| Préfixes E5 | `query: ` / `passage: ` attendus par les modèles E5 | 4.2 |
+| Chargement paresseux | Charger une ressource coûteuse seulement au premier usage | 4.2 |
+| Injection de dépendance | Passer un composant en paramètre au lieu de le créer à l'intérieur | 4.2 |
+| Fake | Faux objet de test qui imite un vrai composant | 4.2 |
+| `Protocol` | Décrit les méthodes attendues d'un objet, sans héritage | 4.2 |
+| Troncature silencieuse | Texte au-delà de la limite du modèle ignoré sans erreur | 4.3 |
+| Marqueur pytest (`slow`) | Étiquette pour sélectionner ou exclure des tests (`-m`) | 4.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
