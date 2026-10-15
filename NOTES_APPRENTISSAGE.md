@@ -27,6 +27,7 @@
   - [3.5 — Comparaison des stratégies](#étape-35--comparaison-des-stratégies)
 - [Phase 4 — Embeddings](#phase-4--embeddings)
 - [Phase 5 — Base vectorielle (ChromaDB)](#phase-5--base-vectorielle-chromadb)
+- [Phase 6 — Recherche sémantique et évaluation](#phase-6--recherche-sémantique-et-évaluation-de-la-recherche)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -1956,6 +1957,122 @@ python -m pytest tests/integration -v
 
 ---
 
+# Phase 6 — Recherche sémantique et évaluation de la recherche
+
+**Objectif de la phase** : retrouver, pour une question, les chunks qui contiennent la réponse, et **mesurer** la qualité de cette recherche, indépendamment du LLM.
+
+> Phase réalisée en **mode autonome** le 2026-10-15.
+
+| Étape | Titre |
+|---|---|
+| 6.1 | `Retriever` : Top-K + seuil optionnel |
+| 6.2 | Métriques et jeu de 20 questions de référence |
+| 6.3 | Comparaison de 4 réglages → nouveaux réglages par défaut |
+
+## Étape 6.1 — Le retriever
+
+### Ce qui a été fait
+
+- Créé `app/retrieval/retriever.py` :
+  ```python
+  retriever = Retriever(embedder, store, top_k=5, min_score=0.0)
+  results = retriever.retrieve("Qu'est-ce que le RAG ?")   # list[SearchResult]
+  ```
+  1. vectorise la question avec **le même** modèle (préfixe `query: `) ;
+  2. demande les `top_k` plus proches à ChromaDB ;
+  3. écarte ceux dont le score est inférieur à `min_score`.
+- 4 tests dans `tests/integration/test_retriever.py` (faux modèle par mots-clés + vraie ChromaDB).
+
+### Notions apprises
+
+**Recherche sémantique (dense)**
+- On compare des **sens** (vecteurs) et non des mots. « Réordonner les candidats » retrouve un passage sur le « reranking ».
+- **Indépendance vis-à-vis du LLM** : le retriever ne sait pas qu'un LLM existe. On peut donc l'évaluer seul, et changer de LLM sans y toucher.
+
+**Top-K**
+- On garde les $K$ chunks les plus proches.
+- $K$ trop petit : on risque de **rater la preuve** (le rappel baisse).
+- $K$ trop grand : du **bruit** et un prompt plus long (la précision baisse).
+
+## Étape 6.2 — Métriques et jeu de questions
+
+### Ce qui a été fait
+
+- Créé `evaluation/questions.json` : **20 questions**, réparties selon le protocole du document 3 du corpus :
+
+  | Catégorie | Nombre | Exemple |
+  |---|---|---|
+  | facile | 7 | « Que mesure la métrique Precision@K ? » |
+  | paraphrase | 6 | « Que risque-t-on si l'on récupère un trop grand nombre de passages ? » (le texte dit « K trop élevé ») |
+  | multi-documents | 3 | « Quels types de tests faut-il prévoir ? » (doc 1 + doc 3) |
+  | sans-réponse | 4 | « Quelle est la capitale de l'Australie ? » |
+
+- Chaque question avec réponse a des **preuves** : des extraits **exacts** du texte nettoyé. `find_missing_evidence` a vérifié que les 22 preuves existent toutes dans le corpus (0 manquante).
+- Créé `app/evaluation/metrics.py`, `dataset.py` et `retrieval_eval.py`, avec 8 + 2 + 1 tests.
+
+### Notions apprises
+
+**Jugement de pertinence par « preuve »**
+- **Problème** : si l'on note « le chunk `-p1-c2` est pertinent », cette référence ne vaut que pour **un** découpage. Avec 400 caractères au lieu de 800, les chunks changent.
+- **Solution** : on note le **texte** de la preuve. Un chunk est pertinent s'il **contient** une preuve. La même référence sert alors à comparer tous les découpages.
+- **Effet de bord voulu** : si une frontière de chunk **coupe** la preuve, elle n'est plus trouvée. C'est une vraie perte d'information, qu'il est juste de pénaliser.
+
+**Precision@K**
+- **Intuition** : parmi ce que j'ai renvoyé, quelle part est utile ?
+- **Formule** : $P@K = \dfrac{\#\{\text{chunks pertinents parmi les } K \text{ premiers}\}}{K}$
+- **Exemple** (tiré du corpus) : 2 pertinents sur 5 → $P@5 = 2/5 = 0{,}40$.
+- **Interprétation** : sur notre corpus, $P@5$ est **structurellement faible**. Une question n'a souvent qu'**une** preuve, donc au mieux 1 ou 2 chunks pertinents sur 5. $P@5 = 0{,}20$ n'est donc pas un mauvais score ici.
+
+**Recall@K**
+- **Intuition** : parmi ce qu'il fallait trouver, quelle part ai-je trouvée ?
+- **Formule** : $R@K = \dfrac{\#\{\text{preuves présentes dans les } K \text{ premiers chunks}\}}{\#\{\text{preuves}\}}$
+- **Exemple** (corpus) : 4 preuves, 2 trouvées → $R@K = 2/4 = 0{,}50$.
+- **Rôle dans le RAG** : c'est **la** métrique clé. Si la preuve n'est pas dans le contexte, le LLM ne peut pas répondre correctement.
+
+**Reciprocal Rank et MRR**
+- **Formule** : $RR = 1/r$, avec $r$ le rang du premier chunk pertinent ($RR = 0$ si aucun) ; $MRR = \frac{1}{N}\sum_{q=1}^{N} RR_q$.
+- **Exemple** (corpus) : rangs 1, 2 et 4 → $MRR = (1 + 0{,}5 + 0{,}25)/3 = 1{,}75/3 \approx 0{,}583$.
+- **Interprétation** : le MRR récompense une preuve **en tête de liste**. C'est important parce que les petits LLM accordent plus d'attention au début du contexte.
+
+**Les exemples du corpus deviennent des tests**
+- `test_precision_example_from_the_corpus`, `test_recall_example_from_the_corpus`, `test_mrr_example_from_the_corpus` vérifient que mon code redonne **exactement** les chiffres du document 3.
+
+## Étape 6.3 — Comparaison des réglages
+
+### Ce qui a été fait
+
+- Créé `scripts/evaluate_retrieval.py` : pour chacun des 4 réglages, il construit une base **temporaire**, indexe le corpus avec le vrai modèle E5, pose les 20 questions et calcule les métriques pour $K \in \{3, 5\}$.
+- **Résultats réels** (`evaluation/results/retrieval.json`) :
+
+  | Mesure | sentence 800/150 | fixed 800/150 | **sentence 400/50** | fixed 400/50 |
+  |---|---|---|---|---|
+  | Chunks | 14 | 15 | 28 | 28 |
+  | Recall@3 | 0,719 | 0,844 | **0,844** | 0,656 |
+  | Recall@5 | 0,812 | **0,938** | 0,906 | 0,781 |
+  | **MRR** | 0,630 | 0,693 | **0,755** | 0,533 |
+  | Plus petit top-score avec réponse | 0,822 | 0,833 | 0,829 | 0,832 |
+  | Plus grand top-score sans réponse | 0,827 | 0,817 | 0,819 | 0,827 |
+
+### Ce que j'en conclus
+
+1. **Nouveau réglage par défaut : « sentence » 400/50**, avec le meilleur MRR et le meilleur Recall@3. Les chunks plus courts ont des vecteurs plus « ciblés ».
+2. **Surprise** : à 800/150, « fixed » bat « sentence » en rappel. En analysant question par question, « sentence » 800 rate deux paraphrases (q03, q08). Avoir des bords propres (Phase 3) **ne suffit pas** à garantir une meilleure recherche. C'est pour cela qu'on mesure.
+3. **Top-K = 5** : +0,062 de rappel par rapport à K = 3.
+4. **Pas de seuil de score** : les meilleurs scores des questions sans réponse **chevauchent** ceux des questions avec réponse, sur 3 réglages sur 4. Aucun seuil ne sépare proprement « le corpus répond » de « le corpus ne répond pas ». C'est le **prompt** qui devra gérer l'abstention.
+5. **Prudence statistique** : 16 questions avec réponse, donc 1 question = 0,0625 de rappel. Un écart de 0,03 correspond à une demi-question : ce sont des **observations**, pas des preuves générales (règle 6.7 de CLAUDE.md).
+
+- Configuration mise à jour (`chunk_size=400`, `chunk_overlap=50`, `retrieval_top_k=5`, `retrieval_min_score=0.0`), puis `python -m scripts.build_index --replace` → **28 chunks**, ancien index entièrement remplacé.
+- `python -m pytest -q` → **127 passed, 2 deselected**.
+
+### À retenir
+
+- Le retriever est évaluable **sans LLM** : Recall@K, Precision@K, MRR.
+- Une référence de pertinence **indépendante du découpage** (les preuves) permet de comparer les stratégies.
+- Les mesures ont **contredit** une intuition (sentence > fixed) et **changé** les réglages par défaut (800 → 400).
+- Le score cosinus seul ne permet pas de détecter « pas de réponse » sur ce corpus.
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -2003,7 +2120,11 @@ python -m pytest tests/integration -v
 | `tests/integration/test_embeddings_real_model.py` | vrai modèle E5 | 2 (`slow`) | 4.3 | [voir](#étape-43--mesures-réelles) |
 | `tests/integration/test_chroma_store.py` | `app/vectorstore/chroma_store.py` | 9 | 5.2 | [voir](#étape-52--chromastore) |
 | `tests/integration/test_ingestion_to_index.py` | `app/rag/pipeline.py` (ingestion) | 5 | 5.3 | [voir](#étape-53--flux-dindexation) |
-| **Total** | | **112** (90 unitaires + 20 d'intégration rapides + 2 lents) | | |
+| `tests/integration/test_retriever.py` | `app/retrieval/retriever.py` | 4 | 6.1 | [voir](#étape-61--le-retriever) |
+| `tests/unit/test_metrics.py` | `app/evaluation/metrics.py` | 8 | 6.2 | [voir](#étape-62--métriques-et-jeu-de-questions) |
+| `tests/unit/test_dataset.py` | `app/evaluation/dataset.py` | 2 | 6.2 | [voir](#étape-62--métriques-et-jeu-de-questions) |
+| `tests/integration/test_retrieval_eval.py` | `app/evaluation/retrieval_eval.py` | 1 | 6.3 | [voir](#étape-63--comparaison-des-réglages) |
+| **Total** | | **129** (102 unitaires + 25 d'intégration rapides + 2 lents) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -2028,6 +2149,7 @@ python -m pytest tests/integration -v
 | 2026-10-15 | 4 | `python -m pytest -q` | 94 passed, 2 deselected in 0.66s |
 | 2026-10-15 | 4 | `python -m pytest -m slow -q` | 2 passed in 17.32s |
 | 2026-10-15 | 5 | `python -m pytest -q` | 110 passed, 2 deselected in 2.58s |
+| 2026-10-15 | 6 | `python -m pytest -q` | 127 passed, 2 deselected in 2.95s |
 
 ## Lire un résultat pytest
 
@@ -2178,6 +2300,15 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Orchestration | Enchaîner des modules indépendants sans y ajouter de logique | 5.3 |
 | Chunk orphelin | Chunk resté dans l'index alors qu'il n'existe plus dans le découpage actuel | 5.3 |
 | Mojibake | Texte abîmé par une mauvaise interprétation de l'encodage (`Ã©`) | 5.3 |
+| Retriever | Composant qui renvoie les chunks les plus proches d'une question | 6.1 |
+| Recherche dense | Recherche par similarité de vecteurs (sens), par opposition à lexicale (mots) | 6.1 |
+| Jeu de référence | Questions + réponses attendues servant à mesurer le système | 6.2 |
+| Preuve (*evidence*) | Extrait exact du corpus qui contient la réponse | 6.2 |
+| Precision@K | Part de chunks pertinents parmi les K renvoyés | 6.2 |
+| Recall@K | Part des preuves retrouvées dans les K premiers chunks | 6.2 |
+| Reciprocal Rank / MRR | $1/\text{rang}$ du premier pertinent / sa moyenne sur les questions | 6.2 |
+| Abstention | Le système dit qu'il ne sait pas au lieu d'inventer | 6.3 |
+| Significativité | Un écart est-il réel ou dû au hasard ? (ici : 1 question = 0,0625) | 6.3 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2

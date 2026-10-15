@@ -1,0 +1,58 @@
+{
+  "embedding_model": "intfloat/multilingual-e5-small",
+  "questions": 20,
+  "results": {
+    "sentence 800/150": {
+      "chunks": 14,
+      "precision@3": 0.2708333333333333,
+      "recall@3": 0.71875,
+      "precision@5": 0.1875,
+      "recall@5": 0.8125,
+      "mrr": 0.6302083333333334,
+      "recall@5_paraphrase": 0.6666666666666666,
+      "recall@5_multi-documents": 0.6666666666666666,
+      "min_top_score_answerable": 0.8221895098686218,
+      "max_top_score_unanswerable": 0.8274649381637573,
+      "latency_ms": 18.945664999773726
+    },
+    "fixed 800/150": {
+      "chunks": 15,
+      "precision@3": 0.3125,
+      "recall@3": 0.84375,
+      "precision@5": 0.21250000000000002,
+      "recall@5": 0.9375,
+      "mrr": 0.6927083333333334,
+      "recall@5_paraphrase": 1.0,
+      "recall@5_multi-documents": 0.6666666666666666,
+      "min_top_score_answerable": 0.8327702283859253,
+      "max_top_score_unanswerable": 0.8174493312835693,
+      "latency_ms": 19.298524997429922
+    },
+    "sentence 400/50": {
+      "chunks": 28,
+      "precision@3": 0.3125,
+      "recall@3": 0.84375,
+      "precision@5": 0.2,
+      "recall@5": 0.90625,
+      "mrr": 0.7552083333333334,
+      "recall@5_paraphrase": 1.0,
+      "recall@5_multi-documents": 0.5,
+      "min_top_score_answerable": 0.8294216394424438,
+      "max_top_score_unanswerable": 0.8189153075218201,
+      "latency_ms": 19.127329997718334
+    },
+    "fixed 400/50": {
+      "chunks": 28,
+      "precision@3": 0.22916666666666666,
+      "recall@3": 0.65625,
+      "precision@5": 0.17500000000000002,
+      "recall@5": 0.78125,
+      "mrr": 0.5333333333333333,
+      "recall@5_paraphrase": 0.6666666666666666,
+      "recall@5_multi-documents": 0.5,
+      "min_top_score_answerable": 0.8319992423057556,
+      "max_top_score_unanswerable": 0.8274791836738586,
+      "latency_ms": 18.7100549985189
+    }
+  }
+}

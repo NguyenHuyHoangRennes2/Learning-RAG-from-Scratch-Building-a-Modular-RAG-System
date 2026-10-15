@@ -41,9 +41,27 @@ def test_chunking_default_values() -> None:
     # Crée la configuration sans .env ni variable d'environnement
     settings = make_settings()
 
-    # Vérifie les valeurs par défaut du chunking
-    assert (settings.chunk_size, settings.chunk_overlap) == (800, 150)
+    # Vérifie les valeurs par défaut du chunking (400/50 depuis l'évaluation de la Phase 6)
+    assert (settings.chunk_size, settings.chunk_overlap) == (400, 50)
     assert settings.chunk_strategy == "sentence"
+
+
+def test_retrieval_default_values() -> None:
+    # Crée la configuration sans .env ni variable d'environnement
+    settings = make_settings()
+
+    # Top-5, sans seuil de score
+    assert (settings.retrieval_top_k, settings.retrieval_min_score) == (5, 0.0)
+
+
+def test_min_score_above_one_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Un score cosinus ne dépasse jamais 1
+    monkeypatch.setenv("RAG_RETRIEVAL_MIN_SCORE", "1.5")
+
+    # Field(le=1.0) doit refuser la valeur
+    with pytest.raises(ValidationError):
+        # Tentative de création invalide
+        make_settings()
 
 
 def test_overlap_greater_or_equal_to_size_is_rejected(

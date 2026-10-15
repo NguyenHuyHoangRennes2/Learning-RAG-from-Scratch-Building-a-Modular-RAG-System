@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 6 — Recherche sémantique et évaluation de la recherche
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 6.1 | `Retriever` (`app/retrieval/retriever.py`) : Top-K + seuil optionnel | ✅ Terminée (2026-10-15, mode autonome) |
+| 6.2 | Métriques (`app/evaluation/metrics.py`) et jeu de 20 questions de référence (`evaluation/questions.json`) | ✅ Terminée (2026-10-15, mode autonome) |
+| 6.3 | Comparaison de 4 réglages (`scripts/evaluate_retrieval.py`) → nouveaux réglages par défaut | ✅ Terminée (2026-10-15, mode autonome) |
+
+**Phase 6 terminée le 2026-10-15.**
+
 ## Phase 5 — Base vectorielle (ChromaDB)
 
 | Étape | Titre | Statut |
@@ -120,6 +130,15 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `scripts/build_index.py` | 5.3 | Point d'entrée : indexe `data/raw/` (option `--replace`) |
 | `tests/fakes.py` | 5.3 | `KeywordEncoder` : faux modèle d'embeddings par mots-clés, partagé par les tests |
 | `tests/integration/test_ingestion_to_index.py` | 5.3 | 5 tests : dossier, doublons, `--replace`, recherche, dossier absent |
+| `app/retrieval/retriever.py` | 6.1 | `Retriever(embedder, store, top_k, min_score).retrieve(question, top_k=None)` |
+| `tests/integration/test_retriever.py` | 6.1 | 4 tests (ordre, top_k par appel, seuil, top_k invalide) |
+| `app/evaluation/` (nouveau package) | 6.2 | `metrics.py` (Precision@K, Recall@K, RR, MRR), `dataset.py` (`EvalQuestion`, `load_questions`, `find_missing_evidence`), `retrieval_eval.py` (`evaluate_retrieval`, `RetrievalEvaluation`) |
+| `evaluation/questions.json` | 6.2 | 20 questions : 7 faciles, 6 paraphrases, 3 multi-documents, 4 sans réponse ; preuves = extraits exacts du corpus |
+| `tests/unit/test_metrics.py`, `tests/unit/test_dataset.py` | 6.2 | 8 + 2 tests (exemples chiffrés du document 3 du corpus) |
+| `tests/integration/test_retrieval_eval.py` | 6.3 | 1 test de la boucle d'évaluation |
+| `scripts/evaluate_retrieval.py` | 6.3 | Compare 4 réglages de chunking × K ∈ {3, 5} ; écrit `evaluation/results/retrieval.json` |
+| `evaluation/results/retrieval.json` | 6.3 | Trace versionnée des mesures |
+| `app/core/config.py`, `.env.example`, `tests/unit/test_config.py` (modifiés) | 6.3 | Chunking **400/50** (au lieu de 800/150) ; + `retrieval_top_k=5`, `retrieval_min_score=0.0` ; + 2 tests (11 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -146,7 +165,7 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - normalisation NFKC et apostrophes `’` → `'`.
   Pas de recollage des césures (`mot-\nsuite`), pour ne pas abîmer les mots composés ; nos PDF n'en contiennent pas.
 - **Chunking — unité = caractères** : simple et sans dépendance. Le lien avec la limite en **tokens** du modèle d'embeddings sera **mesuré** en Phase 4 (estimation actuelle, non mesurée : 800 caractères ≈ 200 tokens).
-- **Chunking — valeurs par défaut** : `chunk_size=800`, `chunk_overlap=150` (environ 19 %), `chunk_strategy="sentence"`. Un chunk ne traverse jamais deux pages, pour que la citation de page reste exacte.
+- **Chunking — valeurs par défaut** : `chunk_size=800`, `chunk_overlap=150` (environ 19 %), `chunk_strategy="sentence"`. **Remplacées en 6.3 par 400/50, après mesure** (voir plus bas). Un chunk ne traverse jamais deux pages, pour que la citation de page reste exacte.
 - **Deux stratégies** implémentées pour pouvoir les **comparer** : « fixed » (référence naïve) et « sentence » (par défaut).
 - **`Chunk`** : des champs « à plat » (`document_id`, `source`, `page_number`, `chunk_index`, `text`), faciles à stocker comme métadonnées dans ChromaDB. `chunk_id` = `"<document_id>-p<page>-c<index>"` est une **propriété calculée**, donc toujours cohérente avec les champs. Comme il est déterministe, réindexer le même document produira les mêmes ids (dédoublonnage en Phase 5). `chunk_index` commence à 0 (identifiant interne), `page_number` à 1 (lu par les humains).
 - **Chunker indépendant de la configuration** : `chunk_size` et `chunk_overlap` sont passés en paramètres explicites, et le chunker n'appelle pas `get_settings()`. Il revalide quand même ses paramètres (`_validate_chunk_params`), parce qu'un pas ≤ 0 provoquerait une boucle infinie si on l'appelait sans passer par `Settings`.
@@ -176,6 +195,13 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   2. Par chunk : `upsert` sur des `chunk_id` déterministes.
   `--replace` **supprime** d'abord les chunks du document : avec d'autres paramètres de chunking, d'anciens `chunk_id` resteraient sinon orphelins.
 - **`app/rag/pipeline.py`** contient l'orchestration de l'ingestion (règle 5.1 de CLAUDE.md : `rag/` orchestre). La partie « question → réponse » y sera ajoutée en Phase 8.
+- **Définition de la pertinence** (6.2) : un chunk est pertinent s'il **contient une preuve**, c'est-à-dire un extrait exact du corpus noté dans `questions.json`. Cette définition est **indépendante du découpage**, ce qui permet de comparer équitablement les stratégies de chunking. `find_missing_evidence` vérifie que chaque preuve existe vraiment dans le corpus.
+- **Nouveau package `app/evaluation/`** (écart avec l'arborescence de CLAUDE.md) : l'évaluation est une responsabilité à part (règle 6.7) et ne doit pas se mélanger au retriever. Le jeu de questions est dans `evaluation/` (versionné), et non dans `data/` (ignoré par Git).
+- **Réglages par défaut choisis par mesure** (6.3, évaluation du 2026-10-15) :
+  - **chunking « sentence » 400/50** (au lieu de 800/150) : meilleur MRR (0,755 contre 0,630) et meilleur Recall@3 (0,844, à égalité avec « fixed » 800/150) ;
+  - **Top-K = 5** : Recall@5 = 0,906 contre 0,844 avec K = 3. Pour un petit LLM, rater la preuve coûte plus cher qu'un peu de bruit en plus ; 5 chunks × environ 330 caractères ≈ 420 tokens de contexte ;
+  - **pas de seuil de score** (`min_score=0.0`) : sur 3 des 4 réglages, une question **sans réponse** obtient un meilleur score qu'une question avec réponse. Sur le réglage retenu, la séparation n'est que de 0,010 (0,829 contre 0,819), mesurée sur 20 questions : bien trop fragile. L'abstention sera confiée aux **consignes du prompt** (Phase 7).
+  - **Limite** : 16 questions avec réponse seulement, et 1 question = 0,0625 de rappel. Les écarts observés sont **indicatifs**, pas statistiquement significatifs.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -362,6 +388,31 @@ Phase 5, vérifiée le 2026-10-15 :
 - `python -m scripts.build_index` (vrais PDF) : 3 documents indexés (5 + 4 + 5 = **14 chunks**) en **17,5 s**, chargement du modèle compris.
 - 2e exécution : 3 × `skipped` (« déjà indexé ») en **0,0 s**. Le modèle n'est même pas chargé (chargement paresseux), et l'index contient toujours 14 chunks.
 - `storage/chroma/` contient `chroma.sqlite3` et un dossier d'index HNSW ; il est ignoré par Git.
+- Commit `cddc139`
+
+Phase 6, vérifiée le 2026-10-15 :
+
+- Jeu de questions : `find_missing_evidence` sur le corpus nettoyé → **0 preuve manquante** (22 preuves pour 16 questions avec réponse)
+- `python -m scripts.evaluate_retrieval` (modèle E5 réel, 20 questions, une base temporaire par réglage) :
+
+  | Mesure | sentence 800/150 | fixed 800/150 | **sentence 400/50** | fixed 400/50 |
+  |---|---|---|---|---|
+  | Chunks | 14 | 15 | 28 | 28 |
+  | Precision@3 | 0,271 | 0,312 | **0,312** | 0,229 |
+  | Recall@3 | 0,719 | 0,844 | **0,844** | 0,656 |
+  | Precision@5 | 0,188 | 0,213 | 0,200 | 0,175 |
+  | Recall@5 | 0,812 | **0,938** | 0,906 | 0,781 |
+  | **MRR** | 0,630 | 0,693 | **0,755** | 0,533 |
+  | Recall@5 paraphrases | 0,667 | 1,000 | 1,000 | 0,667 |
+  | Recall@5 multi-documents | 0,667 | 0,667 | 0,500 | 0,500 |
+  | Plus petit top-score (avec réponse) | 0,822 | 0,833 | 0,829 | 0,832 |
+  | Plus grand top-score (sans réponse) | 0,827 | 0,817 | 0,819 | 0,827 |
+  | Latence de recherche / question | 18,9 ms | 19,3 ms | 19,1 ms | 18,7 ms |
+
+- Analyse question par question (sentence 800 contre les autres) : « sentence » 800/150 rate **q03** et **q08**, deux paraphrases, que les autres réglages retrouvent. Ses chunks plus longs (4 à 5 sujets chacun) ont un vecteur plus « dilué ».
+- Constat surprenant, gardé tel quel : à 800/150, « fixed » fait **mieux** que « sentence » en rappel. Avoir des bords propres ne garantit donc pas une meilleure recherche. **C'est la mesure qui tranche**, pas l'intuition de la Phase 3.
+- Après le changement de configuration : `python -m scripts.build_index --replace` → 9 + 9 + 10 = **28 chunks** (l'ancien index de 14 chunks a été entièrement remplacé, sans orphelin) ; `compare_chunking` en 400/50 donne 100 % de bords propres pour « sentence ».
+- `ruff check` : OK (1 tri d'imports `I001` corrigé à la main pour garder les commentaires) ; `python -m pytest -q` : **127 passed, 2 deselected**
 
 ## Données de travail
 
@@ -378,4 +429,4 @@ Phase 5, vérifiée le 2026-10-15 :
 
 ## Prochaine sous-étape
 
-Phase 6 — Recherche sémantique (retriever + évaluation de la recherche).
+Phase 7 — Intégration du LLM (Ollama, prompts).

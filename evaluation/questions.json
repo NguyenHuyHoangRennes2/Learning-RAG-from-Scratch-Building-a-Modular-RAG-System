@@ -1,0 +1,155 @@
+{
+  "description": "Jeu de questions de référence sur le corpus de démonstration (3 PDF dans data/raw/). Chaque preuve est un extrait EXACT du texte nettoyé ; un chunk qui la contient est jugé pertinent. Les mots-clés attendus servent à évaluer les réponses du LLM (Phase 11).",
+  "version": 1,
+  "questions": [
+    {
+      "id": "q01",
+      "category": "facile",
+      "question": "Qu'est-ce que le Retrieval-Augmented Generation ?",
+      "evidence": ["associe un système de recherche d'informations à un modèle de langage"],
+      "expected_keywords": ["recherche", "modèle de langage"]
+    },
+    {
+      "id": "q02",
+      "category": "facile",
+      "question": "Quelles métadonnées sont recommandées pour chaque chunk ?",
+      "evidence": ["un identifiant de document, le nom du fichier, le numéro de page et l'identifiant du chunk"],
+      "expected_keywords": ["page", "fichier"]
+    },
+    {
+      "id": "q03",
+      "category": "paraphrase",
+      "question": "Pourquoi faut-il séparer la préparation des documents de la phase où l'on répond aux questions ?",
+      "evidence": ["pour éviter de réindexer tous les documents à chaque question"],
+      "expected_keywords": ["réindexer"]
+    },
+    {
+      "id": "q04",
+      "category": "paraphrase",
+      "question": "Quels risques présente un découpage en morceaux trop petits ou trop grands ?",
+      "evidence": ["Un chunk trop petit peut perdre le contexte ; un chunk trop grand peut réduire la précision"],
+      "expected_keywords": ["contexte", "précision"]
+    },
+    {
+      "id": "q05",
+      "category": "facile",
+      "question": "Comment calcule-t-on la similarité cosinus ?",
+      "evidence": ["Le produit scalaire est la somme des produits des composantes correspondantes"],
+      "expected_keywords": ["produit scalaire", "norme"]
+    },
+    {
+      "id": "q06",
+      "category": "facile",
+      "question": "Quelle est la similarité cosinus entre a = (1, 2) et b = (2, 1) ?",
+      "evidence": ["La similarité vaut donc 4/5 = 0,8"],
+      "expected_keywords": ["0,8"]
+    },
+    {
+      "id": "q07",
+      "category": "paraphrase",
+      "question": "Quel réglage de départ est conseillé pour la longueur des segments et leur chevauchement ?",
+      "evidence": ["une taille de 800 caractères avec un overlap de 150 caractères"],
+      "expected_keywords": ["800", "150"]
+    },
+    {
+      "id": "q08",
+      "category": "paraphrase",
+      "question": "Que risque-t-on si l'on récupère un trop grand nombre de passages ?",
+      "evidence": ["un nombre K trop élevé peut ajouter du bruit"],
+      "expected_keywords": ["bruit"]
+    },
+    {
+      "id": "q09",
+      "category": "facile",
+      "question": "Quelle est la différence entre la recherche lexicale BM25 et la recherche dense ?",
+      "evidence": ["La recherche lexicale (par exemple BM25) privilégie les correspondances de termes"],
+      "expected_keywords": ["termes", "embeddings"]
+    },
+    {
+      "id": "q10",
+      "category": "paraphrase",
+      "question": "À quoi sert le fait de réordonner les candidats après la première récupération, et quel en est le coût ?",
+      "evidence": ["un modèle réévalue plus finement la pertinence des couples question-passage"],
+      "expected_keywords": ["latence"]
+    },
+    {
+      "id": "q11",
+      "category": "facile",
+      "question": "Que mesure la métrique Precision@K ?",
+      "evidence": ["Precision@K mesure la proportion de résultats pertinents dans les K passages récupérés"],
+      "expected_keywords": ["proportion"]
+    },
+    {
+      "id": "q12",
+      "category": "facile",
+      "question": "Que vaut le MRR si les premiers passages pertinents sont aux rangs 1, 2 et 4 ?",
+      "evidence": ["le MRR = (1 + 0,5 + 0,25)/3 = 0,5833 environ"],
+      "expected_keywords": ["0,58"]
+    },
+    {
+      "id": "q13",
+      "category": "paraphrase",
+      "question": "Comment vérifier que les affirmations d'une réponse sont bien appuyées par les documents ?",
+      "evidence": ["vérifie que les affirmations de la réponse sont soutenues par les documents récupérés"],
+      "expected_keywords": ["fidélité"]
+    },
+    {
+      "id": "q14",
+      "category": "multi-documents",
+      "question": "Que doit faire un système RAG lorsque les documents ne permettent pas de répondre ?",
+      "evidence": [
+        "doit signaler que les sources disponibles sont insuffisantes plutôt qu'inventer une information",
+        "le comportement attendu est une abstention explicite plutôt qu'une invention"
+      ],
+      "expected_keywords": []
+    },
+    {
+      "id": "q15",
+      "category": "multi-documents",
+      "question": "De quoi dépend la qualité d'un système RAG et comment comparer plusieurs réglages ?",
+      "evidence": [
+        "La qualité dépend de l'extraction, du chunking, du modèle d'embeddings, des paramètres de recherche et du prompt",
+        "Faire varier un paramètre à la fois"
+      ],
+      "expected_keywords": []
+    },
+    {
+      "id": "q16",
+      "category": "multi-documents",
+      "question": "Quels types de tests faut-il prévoir pour un système RAG ?",
+      "evidence": [
+        "prévoir des tests unitaires et une évaluation sur des questions de référence",
+        "Les tests d'intégration peuvent indexer un mini-corpus connu"
+      ],
+      "expected_keywords": ["tests"]
+    },
+    {
+      "id": "q17",
+      "category": "sans-réponse",
+      "question": "Quel est le prix d'un abonnement mensuel à ChatGPT ?",
+      "evidence": [],
+      "expected_keywords": []
+    },
+    {
+      "id": "q18",
+      "category": "sans-réponse",
+      "question": "Qui a inventé l'algorithme d'indexation HNSW et en quelle année ?",
+      "evidence": [],
+      "expected_keywords": []
+    },
+    {
+      "id": "q19",
+      "category": "sans-réponse",
+      "question": "Quelle est la capitale de l'Australie ?",
+      "evidence": [],
+      "expected_keywords": []
+    },
+    {
+      "id": "q20",
+      "category": "sans-réponse",
+      "question": "Combien de paramètres possède le modèle GPT-4 ?",
+      "evidence": [],
+      "expected_keywords": []
+    }
+  ]
+}

@@ -47,12 +47,13 @@ class Settings(BaseSettings):
     processed_data_dir: Path = PROJECT_ROOT / "data" / "processed"
     chroma_dir: Path = PROJECT_ROOT / "storage" / "chroma"
 
-    # --- Chunking (Phase 3) ---
-    # Taille maximale d'un chunk, en caractères ; gt=0 interdit 0 et les valeurs négatives
-    chunk_size: int = Field(default=800, gt=0)
+    # --- Chunking (Phase 3, valeurs choisies par mesure en Phase 6) ---
+    # Taille maximale d'un chunk, en caractères ; gt=0 interdit 0 et les valeurs négatives.
+    # 400 (et non 800) : meilleur MRR mesuré (0,755 contre 0,630, voir evaluation/results/)
+    chunk_size: int = Field(default=400, gt=0)
 
     # Nombre de caractères repris du chunk précédent ; ge=0 autorise 0 (pas de chevauchement)
-    chunk_overlap: int = Field(default=150, ge=0)
+    chunk_overlap: int = Field(default=50, ge=0)
 
     # Stratégie de découpage utilisée par défaut
     chunk_strategy: ChunkStrategy = "sentence"
@@ -70,6 +71,13 @@ class Settings(BaseSettings):
     # --- Base vectorielle (Phase 5) ---
     # Nom de la collection ChromaDB (3 à 512 caractères : lettres, chiffres, . _ -)
     chroma_collection_name: str = "rag_chunks"
+
+    # --- Recherche (Phase 6) ---
+    # Nombre de chunks retrouvés par question (Recall@5 = 0,906 contre 0,844 pour K=3, mesuré)
+    retrieval_top_k: int = Field(default=5, gt=0)
+
+    # Score cosinus minimal pour garder un chunk ; 0.0 = pas de filtre (aucun seuil fiable mesuré)
+    retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
     @model_validator(mode="after")
     def _check_chunk_overlap(self) -> "Settings":
