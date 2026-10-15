@@ -53,7 +53,7 @@ Work incrementally and wait for the student's confirmation before moving to the 
 | PDF extraction | PyMuPDF |
 | Embeddings | Sentence Transformers |
 | Vector database | ChromaDB |
-| LLM | Ollama or configurable external API |
+| LLM | Ollama (local, free open-source models; no paid API) |
 | Backend | FastAPI |
 | Frontend | Streamlit |
 | Testing | Pytest |

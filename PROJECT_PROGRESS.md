@@ -8,9 +8,9 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 | Étape | Titre | Statut |
 |---|---|---|
-| 3.1 | Principes du chunking + paramètres dans la configuration | 🔎 Implémentée, en attente de validation |
-| 3.2 | Structure de données `Chunk` (`app/models.py`) | ⬜ À faire |
-| 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | ⬜ À faire |
+| 3.1 | Principes du chunking + paramètres dans la configuration | ✅ Validée (2026-10-12) |
+| 3.2 | Structure de données `Chunk` (`app/models.py`) | ✅ Validée (2026-10-15) |
+| 3.3 | Chunker, stratégie « fixed » (`app/ingestion/chunker.py`) | 🔎 En cours |
 | 3.4 | Chunker, stratégie « sentence » (`app/ingestion/chunker.py`) | ⬜ À faire |
 | 3.5 | Comparaison des stratégies sur les vrais PDF (script + test d'intégration) | ⬜ À faire |
 
@@ -71,6 +71,8 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `app/core/config.py` (modifié) | 3.1 | + `chunk_size=800`, `chunk_overlap=150`, `chunk_strategy="sentence"`, validateur `overlap < size` |
 | `.env.example` (modifié) | 3.1 | + variables `RAG_CHUNK_SIZE`, `RAG_CHUNK_OVERLAP`, `RAG_CHUNK_STRATEGY` |
 | `tests/unit/test_config.py` (modifié) | 3.1 | + 4 tests sur les paramètres de chunking (8 au total) |
+| `app/models.py` (modifié) | 3.2 | + dataclass `Chunk` (propriété calculée `chunk_id`) ; validation commune extraite dans `_validate_origin()` |
+| `tests/unit/test_models.py` (modifié) | 3.2 | + 6 tests sur `Chunk` (12 au total) |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -99,10 +101,15 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - **Chunking — unité = caractères** : simple et sans dépendance. Le lien avec la limite en **tokens** du modèle d'embeddings sera **mesuré** en Phase 4 (estimation actuelle, non mesurée : 800 caractères ≈ 200 tokens).
 - **Chunking — valeurs par défaut** : `chunk_size=800`, `chunk_overlap=150` (environ 19 %), `chunk_strategy="sentence"`. Un chunk ne traverse jamais deux pages, pour que la citation de page reste exacte.
 - **Deux stratégies** implémentées pour pouvoir les **comparer** : « fixed » (référence naïve) et « sentence » (par défaut).
+- **`Chunk`** : des champs « à plat » (`document_id`, `source`, `page_number`, `chunk_index`, `text`), faciles à stocker comme métadonnées dans ChromaDB. `chunk_id` = `"<document_id>-p<page>-c<index>"` est une **propriété calculée**, donc toujours cohérente avec les champs. Comme il est déterministe, réindexer le même document produira les mêmes ids (dédoublonnage en Phase 5). `chunk_index` commence à 0 (identifiant interne), `page_number` à 1 (lu par les humains).
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
 - **LLM : Ollama uniquement** (décision de l'étudiant, 2026-10-11). C'est une solution 100 % locale et gratuite. Avec 8 Go de RAM et une GTX 1650 (4 Go de VRAM), on vise un modèle d'environ 3B paramètres. Le module `generation/llm.py` restera derrière une interface simple, pour pouvoir changer de fournisseur plus tard si besoin.
+- **Uniquement des modèles open source et gratuits, aucune API payante** (confirmé par l'étudiant, 2026-10-15). L'« API » d'Ollama est une API REST **locale** (`http://localhost:11434`), sans clé ni Internet. Modèles envisagés, non encore mesurés :
+  - embeddings (Phase 4, `sentence-transformers`, CPU) : un modèle **multilingue**, par exemple `paraphrase-multilingual-MiniLM-L12-v2` ou `multilingual-e5-small` ;
+  - LLM (Phase 7, Ollama) : environ 3B paramètres, quantifié. `qwen2.5:3b` est le candidat principal (bon en français), `llama3.2:3b` l'alternative, `gemma2:2b` le secours si la mémoire manque.
+  Le choix final se fera par mesure, en Phase 4 et en Phase 7.
 
 ## Vérifications effectuées (résultats réels)
 
@@ -208,6 +215,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 - `python -m pytest tests -q` : **43 passed** (39 + 4 nouveaux) ; `ruff check` : OK
 - `get_settings()` → `800 150 sentence`
 
+Étape 3.2, vérifiée le 2026-10-12 :
+
+- `python -m pytest tests/unit/test_models.py -v` : 12 passed (les 6 anciens tests de `DocumentPage` passent toujours après la factorisation)
+- `python -m pytest tests -q` : **49 passed** ; `ruff check` : OK
+- Démonstration : `Chunk('49289fd3ade5e236', '01_introduction_rag.pdf', 1, 0, ...).chunk_id` → `49289fd3ade5e236-p1-c0`
+
 ## Données de travail
 
 - `data/raw/` contient 3 PDF en **français** : `01_introduction_rag.pdf`, `02_embeddings_recherche_vectorielle.pdf`, `03_evaluation_rag.pdf`. Il faudra donc un modèle d'embeddings multilingue en Phase 4.
@@ -222,4 +235,4 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 ## Prochaine sous-étape
 
-3.2 — Structure de données `Chunk` (après validation de 3.1).
+3.3 — Chunker, stratégie « fixed » (en cours).

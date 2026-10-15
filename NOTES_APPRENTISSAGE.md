@@ -21,6 +21,7 @@
   - [2.5 — Validation et test d'intégration](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration)
 - [Phase 3 — Chunking](#phase-3--chunking)
   - [3.1 — Principes du chunking et paramètres](#étape-31--principes-du-chunking-et-paramètres)
+  - [3.2 — Structure de données Chunk](#étape-32--structure-de-données-chunk)
 - [Registre des tests (pytest)](#registre-des-tests-pytest)
 - [Glossaire](#glossaire)
 
@@ -65,6 +66,31 @@
 **LLM local vs API**
 - **Ollama (local)** : gratuit, les données restent sur ma machine, mais la qualité dépend du matériel (8 Go de RAM → modèles d'environ 3B paramètres).
 - **API (OpenAI…)** : très bonne qualité, rien à installer, mais payant et les données partent chez le fournisseur.
+- **Mon choix** : **Ollama uniquement**, avec des modèles **open source et gratuits**. Le projet n'utilise aucune API payante.
+
+**API cloud vs API locale** (précision ajoutée le 2026-10-15)
+- Le mot « API » ne veut pas dire « payant ». Une API est simplement la façon dont deux programmes communiquent.
+
+  | | API cloud (OpenAI, Anthropic…) | API locale d'Ollama |
+  |---|---|---|
+  | Où tourne le modèle ? | Sur les serveurs du fournisseur | **Sur mon PC** |
+  | Coût | Payant, au token | **Gratuit** |
+  | Clé API | Obligatoire | Aucune |
+  | Données | Envoyées sur Internet | **Restent sur ma machine** |
+  | Adresse | `https://api.…` | `http://localhost:11434` |
+
+- **Fonctionnement** : Ollama fait tourner le modèle sur ma machine et expose une petite API REST sur `localhost`. Mon code Python (`httpx`) lui envoie une requête HTTP et reçoit la réponse, sans Internet, sans compte et sans paiement.
+
+**Les deux modèles open source du projet**
+
+| Rôle | Outil | Exemples de modèles | Phase |
+|---|---|---|---|
+| Embeddings (texte → vecteur) | `sentence-transformers`, sur CPU | Multilingues, car mes PDF sont en français : `paraphrase-multilingual-MiniLM-L12-v2`, `multilingual-e5-small` | 4 |
+| Génération de la réponse (LLM) | Ollama, sur GPU/CPU | Environ 3B paramètres, quantifiés : `qwen2.5:3b` (bon en français), `llama3.2:3b`, `gemma2:2b` (secours, plus léger) | 7 |
+
+- **Pourquoi environ 3B** : avec 4 Go de VRAM (GTX 1650), un modèle de 7B quantifié ne tient pas entièrement dans le GPU. Il fonctionnerait, mais beaucoup plus lentement.
+- **Choix final** : il sera fait en Phase 7, après **mesure** de la vitesse et de la qualité sur mes propres documents. Changer de modèle = changer une ligne de configuration.
+- **Compromis** : un petit modèle local est moins capable qu'un grand modèle commercial. Dans un RAG, l'écart est réduit, car le modèle n'a pas à *savoir* la réponse : il la reformule à partir des passages retrouvés. La qualité du **retrieval** (chunking, embeddings) compte donc beaucoup.
 
 ### À retenir
 
@@ -1111,7 +1137,7 @@ data/processed/*.json
 
 ## Étape 3.1 — Principes du chunking et paramètres
 
-> Statut : implémentée le 2026-10-11, en attente de validation
+> Statut : validée le 2026-10-12
 
 ### Ce que j'ai fait
 
@@ -1235,6 +1261,82 @@ $$
 
 ---
 
+## Étape 3.2 — Structure de données Chunk
+
+> Statut : validée le 2026-10-15
+
+### Ce que j'ai fait
+
+- Ajouté la dataclass `Chunk` dans `app/models.py` : `document_id`, `source`, `page_number`, `chunk_index`, `text`, plus la **propriété calculée** `chunk_id`.
+- **Factorisé** les vérifications communes à `DocumentPage` et `Chunk` dans une fonction `_validate_origin()`, au lieu de les recopier.
+- Ajouté 6 tests dans `tests/unit/test_models.py`.
+- Démonstration :
+  ```powershell
+  python -c "from app.models import Chunk; c = Chunk('49289fd3ade5e236', '01_introduction_rag.pdf', 1, 0, 'Le RAG est...'); print(c.chunk_id)"
+  # → 49289fd3ade5e236-p1-c0
+  ```
+
+### Tests (pytest)
+
+**Fichier** : `tests/unit/test_models.py` (6 tests ajoutés) · **Module testé** : `app/models.py`
+
+| Test | Ce qu'il vérifie | Pourquoi c'est important |
+|---|---|---|
+| `test_chunk_id_combines_document_page_and_index` | `chunk_index=3`, page 2 → `"abc123-p2-c3"` | Format de l'identifiant |
+| `test_chunk_id_is_stable` | Mêmes valeurs → même `chunk_id` | Réindexer ne crée pas de doublons (Phase 5) |
+| `test_negative_chunk_index_is_rejected` | `chunk_index=-1` → `ValueError` | Détecte un bug de numérotation |
+| `test_blank_chunk_text_is_rejected` | Texte `"   \n "` → `ValueError` | Un chunk vide est inutile pour la recherche |
+| `test_chunk_shares_origin_validation_with_page` | `page_number=0` → `ValueError` | La règle commune s'applique bien aux chunks |
+| `test_chunk_is_immutable` | `chunk.text = ...` → `FrozenInstanceError` | Un chunk vectorisé ne doit plus changer |
+
+**Test de non-régression** : les **6 anciens tests** de `DocumentPage` passent toujours après la factorisation. C'est la preuve qu'elle n'a rien cassé.
+
+**Lancer ces tests :**
+```powershell
+python -m pytest tests/unit/test_models.py -v
+```
+
+**Résultat réel (2026-10-12)** : 12 passed dans ce fichier (49 au total, en 0.50s)
+
+### Notions apprises
+
+**Identifiant de chunk déterministe**
+- **Format** : `"<document_id>-p<page>-c<index>"`, par exemple `49289fd3ade5e236-p1-c0` = document `49289f…`, page 1, premier chunk.
+- **Déterministe** : les mêmes entrées donnent toujours le même id (pas d'id aléatoire).
+- **Pourquoi** : en Phase 5, si on réindexe le même PDF, ChromaDB recevra les **mêmes ids** et **remplacera** les chunks au lieu de les dupliquer.
+- **Lisible** : en lisant l'id, on sait d'où vient le chunk.
+
+**Propriété calculée (`@property`)**
+- **Définition** : une méthode qui s'utilise **comme un attribut** : `chunk.chunk_id`, sans parenthèses.
+- **Pourquoi ne pas stocker `chunk_id` comme un champ** : il pourrait devenir **incohérent** (`chunk_id="x-p9-c9"` avec `page_number=1`). Calculé à la demande, il est **toujours juste**.
+
+**Factorisation (principe DRY : *Don't Repeat Yourself*)**
+- **Définition** : extraire du code répété dans une fonction unique.
+- **Ici** : les 3 vérifications (`document_id`, `source`, `page_number`) étaient nécessaires dans `DocumentPage` **et** `Chunk`. Elles sont maintenant dans `_validate_origin()`.
+- **Avantage** : une règle modifiée une fois s'applique partout.
+- **Le `_` initial** : convention Python pour « fonction interne au module, ne pas l'utiliser ailleurs ».
+
+**Test de non-régression**
+- **Définition** : relancer les tests **existants** après une modification, pour vérifier qu'on n'a rien cassé (*régression* = un recul, quelque chose qui marchait et ne marche plus).
+- **Ici** : les 6 tests de `DocumentPage` ont joué ce rôle pendant la factorisation.
+
+**Index à partir de 0, page à partir de 1**
+- `chunk_index` est un identifiant **interne** : la convention informatique (0) s'applique.
+- `page_number` est **lu par les humains** dans les citations : on commence à 1.
+
+**Champs « à plat »**
+- `Chunk` recopie `document_id`, `source` et `page_number` au lieu de contenir une `DocumentPage`.
+- **Pourquoi** : ChromaDB (Phase 5) stocke des métadonnées sous forme de dictionnaire simple (`{"source": ..., "page_number": ...}`), sans objets imbriqués.
+
+### À retenir
+
+- Un chunk porte **tout** ce qu'il faut pour être cité : document, page, position.
+- Un id **déterministe** permet de réindexer sans créer de doublons.
+- Préférer une valeur **calculée** (`@property`) à une valeur stockée qui pourrait devenir incohérente.
+- Factoriser (DRY), puis vérifier avec les tests existants (non-régression).
+
+---
+
 # Registre des tests (pytest)
 
 ## Commandes essentielles
@@ -1272,11 +1374,11 @@ $$
 |---|---|---|---|---|
 | `tests/unit/test_config.py` | `app/core/config.py` | 8 | 1.5-A, 3.1 | [voir 1.5-A](#étape-15-a--configuration-centralisée), [voir 3.1](#étape-31--principes-du-chunking-et-paramètres) |
 | `tests/unit/test_logging_config.py` | `app/core/logging_config.py` | 4 | 1.5-B | [voir](#étape-15-b--logging) |
-| `tests/unit/test_models.py` | `app/models.py` | 6 | 2.2 | [voir](#étape-22--structure-de-données-dune-page) |
+| `tests/unit/test_models.py` | `app/models.py` | 12 | 2.2, 3.2 | [voir 2.2](#étape-22--structure-de-données-dune-page), [voir 3.2](#étape-32--structure-de-données-chunk) |
 | `tests/unit/test_pdf_loader.py` | `app/ingestion/pdf_loader.py` | 9 | 2.3 | [voir](#étape-23--chargeur-pdf) |
 | `tests/unit/test_text_cleaner.py` | `app/ingestion/text_cleaner.py` | 14 | 2.4 | [voir](#étape-24--nettoyage-du-texte) |
 | `tests/integration/test_ingestion_pipeline.py` | `pdf_loader` + `text_cleaner` + `ingest_preview` | 2 | 2.5 | [voir](#étape-25--validation-sur-les-vrais-pdf-et-test-dintégration) |
-| **Total** | | **43** (41 unitaires + 2 d'intégration) | | |
+| **Total** | | **49** (47 unitaires + 2 d'intégration) | | |
 
 ## Historique des exécutions (résultats réels)
 
@@ -1293,6 +1395,7 @@ $$
 | 2026-10-11 | 2.5 | `python -m pytest tests -v` (1re exécution) | **2 failed**, 37 passed : PDF de test irréaliste |
 | 2026-10-11 | 2.5 | après correction du PDF de test | 39 passed in 0.49s |
 | 2026-10-11 | 3.1 | `python -m pytest tests -q` | 43 passed in 0.52s |
+| 2026-10-12 | 3.2 | `python -m pytest tests -q` | 49 passed in 0.50s |
 
 ## Lire un résultat pytest
 
@@ -1398,6 +1501,16 @@ tests/unit/test_config.py::test_default_values PASSED     [ 12%]
 | Token | Unité de texte lue par un modèle (mot, sous-mot, signe) | 3.1 |
 | Troncature | Partie du texte ignorée au-delà de la limite du modèle | 3.1 |
 | `model_validator` | Validation Pydantic portant sur plusieurs champs | 3.1 |
+| `chunk_id` | Identifiant déterministe `<document_id>-p<page>-c<index>` | 3.2 |
+| `@property` | Méthode utilisée comme un attribut (valeur calculée) | 3.2 |
+| DRY | « Don't Repeat Yourself » : factoriser le code répété | 3.2 |
+| Non-régression | Vérifier qu'une modification ne casse pas ce qui marchait | 3.2 |
+| API | Façon dont deux programmes communiquent ; pas forcément payante ni distante | 1.1 |
+| API locale | API servie par un programme de ma machine (`localhost`), ex. Ollama | 1.1 |
+| Ollama | Programme qui fait tourner des LLM open source en local et les expose via une API REST | 1.1 |
+| Modèle open source | Modèle dont les poids sont publiés et utilisables gratuitement | 1.1 |
+| Quantification | Stockage des poids avec moins de bits (ex. 4 bits) pour réduire la mémoire nécessaire | 1.1 |
+| VRAM | Mémoire de la carte graphique ; limite la taille du modèle que le GPU peut charger | 1.1 |
 ** Pourquoi utiliser config.py ? **
 Imaginons que ton RAG utilise :
 - Un modèle d'embeddings : all-MiniLM-L6-v2
