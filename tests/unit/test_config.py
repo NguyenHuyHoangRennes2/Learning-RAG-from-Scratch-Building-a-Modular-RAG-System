@@ -54,6 +54,16 @@ def test_retrieval_default_values() -> None:
     assert (settings.retrieval_top_k, settings.retrieval_min_score) == (5, 0.0)
 
 
+def test_llm_default_values() -> None:
+    # Crée la configuration sans .env ni variable d'environnement
+    settings = make_settings()
+
+    # Ollama local, modèle ~3B, température basse
+    assert settings.ollama_base_url == "http://localhost:11434"
+    assert settings.ollama_model == "qwen2.5:3b"
+    assert settings.llm_temperature == 0.1
+
+
 def test_min_score_above_one_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     # Un score cosinus ne dépasse jamais 1
     monkeypatch.setenv("RAG_RETRIEVAL_MIN_SCORE", "1.5")

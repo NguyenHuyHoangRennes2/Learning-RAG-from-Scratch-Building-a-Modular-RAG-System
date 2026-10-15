@@ -79,6 +79,22 @@ class Settings(BaseSettings):
     # Score cosinus minimal pour garder un chunk ; 0.0 = pas de filtre (aucun seuil fiable mesuré)
     retrieval_min_score: float = Field(default=0.0, ge=0.0, le=1.0)
 
+    # --- LLM via Ollama (Phase 7) ---
+    # Adresse de l'API REST locale d'Ollama (aucune clé, aucun appel Internet)
+    ollama_base_url: str = "http://localhost:11434"
+
+    # Modèle Ollama (~3B paramètres : tient dans 4 Go de VRAM ; bon en français)
+    ollama_model: str = "qwen2.5:3b"
+
+    # Température : 0 = réponses quasi déterministes, collées au contexte (souhaité pour un RAG)
+    llm_temperature: float = Field(default=0.1, ge=0.0, le=2.0)
+
+    # Taille de la fenêtre de contexte demandée à Ollama, en tokens (prompt + réponse)
+    llm_num_ctx: int = Field(default=4096, gt=0)
+
+    # Délai maximal d'attente d'une réponse (un petit modèle sur CPU peut être lent)
+    llm_timeout_seconds: float = Field(default=120.0, gt=0)
+
     @model_validator(mode="after")
     def _check_chunk_overlap(self) -> "Settings":
         """Vérifie une règle qui porte sur DEUX champs : overlap < size."""

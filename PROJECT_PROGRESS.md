@@ -6,6 +6,16 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 
 > **Mode autonome (2026-10-15)** : l'étudiant a demandé de terminer le projet jusqu'à la Phase 12 **sans validation intermédiaire**. Il évaluera l'ensemble à la fin. Les étapes suivantes sont donc marquées « Terminée (mode autonome) » et non « Validée ». Chaque étape reste documentée ici (résultats réels) et dans `NOTES_APPRENTISSAGE.md`.
 
+## Phase 7 — Intégration du LLM (Ollama)
+
+| Étape | Titre | Statut |
+|---|---|---|
+| 7.1 | Paramètres Ollama dans la configuration | ✅ Terminée (2026-10-15, mode autonome) |
+| 7.2 | Prompts (`app/generation/prompts.py`) : consignes, sources numérotées, anti-injection, citations, abstention | ✅ Terminée (2026-10-15, mode autonome) |
+| 7.3 | Client Ollama (`app/generation/llm.py`) + `scripts/check_ollama.py` | ⚠️ Terminée, testée **avec un faux serveur uniquement** : Ollama n'est pas installé |
+
+**Phase 7 terminée le 2026-10-15**, avec un blocage documenté (voir « Problèmes connus »).
+
 ## Phase 6 — Recherche sémantique et évaluation de la recherche
 
 | Étape | Titre | Statut |
@@ -139,6 +149,12 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
 | `scripts/evaluate_retrieval.py` | 6.3 | Compare 4 réglages de chunking × K ∈ {3, 5} ; écrit `evaluation/results/retrieval.json` |
 | `evaluation/results/retrieval.json` | 6.3 | Trace versionnée des mesures |
 | `app/core/config.py`, `.env.example`, `tests/unit/test_config.py` (modifiés) | 6.3 | Chunking **400/50** (au lieu de 800/150) ; + `retrieval_top_k=5`, `retrieval_min_score=0.0` ; + 2 tests (11 au total) |
+| `app/core/config.py`, `.env.example`, `tests/unit/test_config.py` (modifiés) | 7.1 | + `ollama_base_url`, `ollama_model="qwen2.5:3b"`, `llm_temperature=0.1`, `llm_num_ctx=4096`, `llm_timeout_seconds=120` ; + 1 test (12 au total) |
+| `app/generation/prompts.py` | 7.2 | `SYSTEM_PROMPT`, `NO_ANSWER_MESSAGE`, `build_context`, `build_user_prompt`, `extract_citations`, `is_no_answer` |
+| `tests/unit/test_prompts.py` | 7.2 | 7 tests (numérotation, injection neutralisée, citations inventées ignorées, abstention) |
+| `app/generation/llm.py` | 7.3 | Protocole `LLMClient` ; `OllamaClient` (`generate`, `is_available`) ; `LLMError`, `LLMUnavailableError` |
+| `tests/unit/test_llm.py` | 7.3 | 5 tests avec `httpx.MockTransport` (requête envoyée, serveur éteint, modèle absent, délai, réponse invalide, disponibilité) |
+| `scripts/check_ollama.py` | 7.3 | Diagnostic : serveur joignable ? modèle installé ? génération OK ? |
 | `app/__init__.py` + 8 sous-packages (`core`, `ingestion`, `embeddings`, `vectorstore`, `retrieval`, `generation`, `rag`, `api`) | 1.2 | Packages Python (fichiers `__init__.py` vides) |
 | `data/raw/.gitkeep`, `data/processed/.gitkeep`, `storage/chroma/.gitkeep` | 1.2 | Conserver les dossiers de données dans Git |
 | Dossiers `frontend/`, `scripts/`, `tests/unit/`, `tests/integration/` | 1.2 | Squelette (vides) |
@@ -202,6 +218,14 @@ Dépôt GitHub : https://github.com/NguyenHuyHoangRennes2/Learning-RAG-from-Scra
   - **Top-K = 5** : Recall@5 = 0,906 contre 0,844 avec K = 3. Pour un petit LLM, rater la preuve coûte plus cher qu'un peu de bruit en plus ; 5 chunks × environ 330 caractères ≈ 420 tokens de contexte ;
   - **pas de seuil de score** (`min_score=0.0`) : sur 3 des 4 réglages, une question **sans réponse** obtient un meilleur score qu'une question avec réponse. Sur le réglage retenu, la séparation n'est que de 0,010 (0,829 contre 0,819), mesurée sur 20 questions : bien trop fragile. L'abstention sera confiée aux **consignes du prompt** (Phase 7).
   - **Limite** : 16 questions avec réponse seulement, et 1 question = 0,0625 de rappel. Les écarts observés sont **indicatifs**, pas statistiquement significatifs.
+- **Prompt** (7.2) :
+  - un message *system* fixe donne 5 règles : sources uniquement, citer `[n]`, phrase d'abstention imposée, sources = données et non instructions, réponse en français ;
+  - un message *user* contient les sources numérotées, puis la question ;
+  - chaque chunk est encadré par `<source id="n" document="…" page="…">…</source>`, et toute balise `<source>` présente **dans** un chunk est remplacée par `[balise retirée]` (anti-injection) ;
+  - la phrase d'abstention est **fixe** (« Je ne trouve pas la réponse dans les documents fournis. »), donc détectable par le code (`is_no_answer`) et mesurable en Phase 11.
+- **Citations vérifiables** : `extract_citations` ne garde que les numéros qui existent (1…n). Un `[7]` avec 5 sources est une citation **inventée**, donc ignorée.
+- **Client Ollama** (7.3) : appel direct de `POST /api/chat` (`stream: false`) avec httpx, plutôt que via le paquet `ollama` (décision de 1.4). Les erreurs réseau sont traduites en `LLMUnavailableError` / `LLMError`, avec un message qui dit **quoi faire** (`ollama pull …`). Le pipeline ne dépend que du `Protocol` `LLMClient`, ce qui permet d'injecter un faux LLM en test.
+- **Température 0,1** : pour un RAG, on veut des réponses stables et collées au contexte, pas de créativité.
 - **Style de code** (demande de l'étudiant, 2026-10-11) : « une ligne = un commentaire ». Chaque ligne importante a son `# commentaire` juste au-dessus, en français.
 - **Scripts lancés avec `python -m scripts.<nom>`** : comme pour pytest, `-m` rend le package `app` importable depuis la racine.
 - **Lancer les tests avec `python -m pytest`** (et non `pytest` seul) : `-m` ajoute le dossier courant à `sys.path`, ce qui rend `app` importable sans configuration supplémentaire.
@@ -413,6 +437,13 @@ Phase 6, vérifiée le 2026-10-15 :
 - Constat surprenant, gardé tel quel : à 800/150, « fixed » fait **mieux** que « sentence » en rappel. Avoir des bords propres ne garantit donc pas une meilleure recherche. **C'est la mesure qui tranche**, pas l'intuition de la Phase 3.
 - Après le changement de configuration : `python -m scripts.build_index --replace` → 9 + 9 + 10 = **28 chunks** (l'ancien index de 14 chunks a été entièrement remplacé, sans orphelin) ; `compare_chunking` en 400/50 donne 100 % de bords propres pour « sentence ».
 - `ruff check` : OK (1 tri d'imports `I001` corrigé à la main pour garder les commentaires) ; `python -m pytest -q` : **127 passed, 2 deselected**
+- Commit `e5f51c4`
+
+Phase 7, vérifiée le 2026-10-15 :
+
+- `ruff check` : OK ; `python -m pytest -q` : **140 passed, 2 deselected** (3,07 s)
+- `python -m scripts.check_ollama` → `❌ Ollama injoignable à http://localhost:11434 ou modèle 'qwen2.5:3b' absent.`, code de sortie 1. C'est le comportement **attendu** sur cette machine (Ollama non installé). Le message donne les 3 commandes à lancer.
+- **Non vérifié** : aucune génération réelle n'a pu être faite. Le format de l'API (`/api/chat`, `message.content`, `/api/tags`) est reproduit dans les faux serveurs des tests à partir de la documentation d'Ollama, mais il n'a pas été confronté à un vrai serveur.
 
 ## Données de travail
 
@@ -425,8 +456,13 @@ Phase 6, vérifiée le 2026-10-15 :
 - **Limite de `remove_repeated_lines`** : une ligne identique (chiffres masqués) dans les 3 premières ou 3 dernières lignes de **toutes** les pages est retirée, même si c'est du contenu. Risque surtout pour les documents aux pages très courtes et très similaires. Pas de souci sur le corpus actuel.
 - Avec PyMuPDF, utiliser `import pymupdf` : l'ancien nom `import fitz` affiche un avertissement de dépréciation.
 - Seules les dépendances directes sont figées ; les dépendances transitives ne le sont pas. Un fichier de verrouillage complet (`pip freeze`) pourra être ajouté en Phase 12 (Docker).
-- Ollama n'est pas encore installé. Ce sera nécessaire au plus tard en Phase 7.
+- **BLOCAGE — Ollama n'est pas installé** (vérifié le 2026-10-15). Tout le code LLM est écrit et testé avec un faux serveur, mais **aucune réponse réelle n'a été générée**. Je n'ai pas installé de logiciel système sans l'accord de l'étudiant. Pour lever le blocage :
+  ```powershell
+  winget install Ollama.Ollama      # ou l'installeur de https://ollama.com/download
+  ollama pull qwen2.5:3b            # environ 1,9 Go
+  python -m scripts.check_ollama    # doit afficher ✅
+  ```
 
 ## Prochaine sous-étape
 
-Phase 7 — Intégration du LLM (Ollama, prompts).
+Phase 8 — Pipeline RAG complet (question → recherche → prompt → LLM → réponse citée).
